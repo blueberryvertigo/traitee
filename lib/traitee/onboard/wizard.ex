@@ -529,21 +529,27 @@ defmodule Traitee.Onboard.Wizard do
     Traitee's tools can read files, write files, and run shell commands.
     The filesystem security system controls what they're allowed to do.
 
-    #{ANSI.bright()}Three layers of protection:#{ANSI.reset()}
+    #{ANSI.bright()}Four layers of protection:#{ANSI.reset()}
 
-      #{ANSI.cyan()}1. Hardcoded denylists#{ANSI.reset()} (always on, cannot be disabled)
+      #{ANSI.cyan()}1. I/O guards#{ANSI.reset()} (always on, cannot be disabled)
+         Scans tool arguments for sensitive paths before execution.
+         Scans tool output for leaked secrets (API keys, private keys,
+         passwords, database URLs) and redacts them automatically.
+         Fail-closed: if any security check crashes, the operation is denied.
+
+      #{ANSI.cyan()}2. Hardcoded denylists#{ANSI.reset()} (always on, cannot be disabled)
          Blocks access to .ssh, .aws, .env, credentials, private keys,
          /proc, /dev, C:\\Windows\\System32, and 30+ other sensitive paths.
          Blocks dangerous commands: curl|sh pipes, fork bombs, netcat, etc.
          Scrubs secrets from environment variables passed to tools.
 
-      #{ANSI.cyan()}2. Sandbox mode#{ANSI.reset()} (application-level isolation)
+      #{ANSI.cyan()}3. Sandbox mode#{ANSI.reset()} (application-level isolation)
          Controls what the AI can access beyond the hardcoded denylists.
          Configurable per-path allow/deny rules with read/write permissions.
          Exec approval gates warn or block risky commands (rm, sudo, etc.).
          Jails bash tool to a sandbox working directory.
 
-      #{ANSI.cyan()}3. Docker isolation#{ANSI.reset()} (OS-level isolation, optional)
+      #{ANSI.cyan()}4. Docker isolation#{ANSI.reset()} (OS-level isolation, optional)
          Runs tool commands inside ephemeral Docker containers with:
          read-only filesystem, no network, memory/CPU limits, PID limits.
          The strongest protection — requires Docker to be installed.
@@ -714,23 +720,23 @@ defmodule Traitee.Onboard.Wizard do
       Exec gates:    #{if fs.exec_gate, do: "ON", else: "OFF"}
       Audit trail:   #{if fs.audit, do: "ON", else: "OFF"}
       Allowed paths: #{if fs.allowed_paths == [], do: "~/.traitee only", else: "#{length(fs.allowed_paths)} configured"}
-      #{ANSI.faint()}Hardcoded denylists are always active regardless of these settings.#{ANSI.reset()}
+      #{ANSI.faint()}I/O guards and hardcoded denylists are always active regardless of these settings.#{ANSI.reset()}
     """)
   end
 
   defp filesystem_protection_level(fs) do
     cond do
       fs.docker_enabled and fs.sandbox_mode and fs.exec_gate ->
-        "#{ANSI.green()}#{ANSI.bright()}MAXIMUM#{ANSI.reset()} — sandbox + Docker + exec gates"
+        "#{ANSI.green()}#{ANSI.bright()}MAXIMUM#{ANSI.reset()} — I/O guards + sandbox + Docker + exec gates"
 
       fs.sandbox_mode and fs.exec_gate ->
-        "#{ANSI.green()}HIGH#{ANSI.reset()} — sandbox + exec gates (no Docker)"
+        "#{ANSI.green()}HIGH#{ANSI.reset()} — I/O guards + sandbox + exec gates (no Docker)"
 
       fs.sandbox_mode ->
-        "#{ANSI.cyan()}MODERATE#{ANSI.reset()} — sandbox only"
+        "#{ANSI.cyan()}MODERATE#{ANSI.reset()} — I/O guards + sandbox only"
 
       true ->
-        "#{ANSI.yellow()}BASIC#{ANSI.reset()} — hardcoded denylists only"
+        "#{ANSI.yellow()}BASIC#{ANSI.reset()} — I/O guards + hardcoded denylists only"
     end
   end
 

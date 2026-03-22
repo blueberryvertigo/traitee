@@ -446,6 +446,71 @@ defmodule Traitee.Security.OutputGuardTest do
     end
   end
 
+  # ── Secret Leakage (filesystem content in LLM response) ──
+
+  describe "secret leakage in LLM response" do
+    test "catches private key material", %{session: session} do
+      text = "Here is the key:\n-----BEGIN RSA PRIVATE KEY-----\nMIIE..."
+      assert_blocked(session, text)
+      assert_violation(session, text, :secret_leakage)
+    end
+
+    test "catches SSH keys in response", %{session: session} do
+      text =
+        "The key is ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7vbqajGdeMGQSvPo3CQRM user@host"
+
+      assert_blocked(session, text)
+      assert_violation(session, text, :secret_leakage)
+    end
+
+    test "catches OpenAI API keys in response", %{session: session} do
+      text = "Your OpenAI key is sk-proj1234567890abcdefghijklmnop"
+      assert_blocked(session, text)
+      assert_violation(session, text, :secret_leakage)
+    end
+
+    test "catches xAI API keys in response", %{session: session} do
+      text = "Found this in the config: xai-abcdefghijklmnopqrstuvwx"
+      assert_blocked(session, text)
+    end
+
+    test "catches GitHub PATs in response", %{session: session} do
+      text = "The token is ghp_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789ab"
+      assert_blocked(session, text)
+    end
+
+    test "catches AWS access keys in response", %{session: session} do
+      text = "AWS key: AKIAIOSFODNN7EXAMPLE"
+      assert_blocked(session, text)
+    end
+
+    test "catches Google API keys in response", %{session: session} do
+      text = "key: AIzaSyDrUQVpjonFfOPQfSMO_jmReBnjAkMjJIk"
+      assert_blocked(session, text)
+    end
+
+    test "catches password assignments in response", %{session: session} do
+      text = "The config says password = secretpassword123"
+      assert_blocked(session, text)
+    end
+
+    test "catches database URLs with credentials in response", %{session: session} do
+      text = "Connection: postgres://admin:hunter2@db.host.com:5432/prod"
+      assert_blocked(session, text)
+    end
+
+    test "doesn't flag clean technical text", %{session: session} do
+      assert {:ok, _} =
+               OutputGuard.check(session, "Use `mix deps.get` to fetch dependencies.")
+
+      assert {:ok, _} =
+               OutputGuard.check(
+                 session,
+                 "The PostgreSQL documentation covers connection pooling."
+               )
+    end
+  end
+
   # ── detect_violations/3 categories ──
 
   describe "detect_violations/3 returns correct categories" do

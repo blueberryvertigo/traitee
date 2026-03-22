@@ -26,6 +26,10 @@ if api_key = System.get_env("ANTHROPIC_API_KEY") do
   config :traitee, :anthropic_api_key, api_key
 end
 
+if api_key = System.get_env("XAI_API_KEY") do
+  config :traitee, :xai_api_key, api_key
+end
+
 # Channel tokens
 if token = System.get_env("DISCORD_BOT_TOKEN") do
   config :traitee, :discord_bot_token, token

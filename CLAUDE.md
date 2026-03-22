@@ -38,7 +38,9 @@ lib/
     memory/                3-tier: STM (ETS) → MTM (summaries) → LTM (knowledge graph)
     context/               Token-aware prompt assembly with budget allocation
     llm/                   Provider abstraction: OpenAI, Anthropic, xAI, Ollama
-    security/              8-layer pipeline: sanitizer, judge, threat tracker, etc.
+    security/              8-layer cognitive pipeline + 4-layer filesystem pipeline
+                           (sanitizer, judge, threat tracker, io_guard, sandbox,
+                            filesystem, exec_gate, docker, audit, output_guard)
     tools/                 8 built-in tools (bash, file, browser, web_search, etc.)
     channels/              Discord, Telegram, WhatsApp, Signal, streaming
     hooks/                 9 hook points with chainable handlers
@@ -54,11 +56,11 @@ lib/
   traitee_web/
     controllers/           health, webhook, openai_proxy (OpenAI-compatible API)
     channels/              Phoenix WebSocket (chat_channel, user_socket)
-  mix/tasks/               9 CLI tasks: chat, serve, send, doctor, memory, cron, daemon, onboard, pairing
+  mix/tasks/               10 CLI tasks: chat, serve, send, doctor, memory, cron, daemon, onboard, pairing, security
 config/                    config.exs, dev.exs, test.exs, prod.exs, runtime.exs
 priv/repo/migrations/      SQLite migrations (sessions, messages, summaries, entities, relations, facts, cron_jobs)
 priv/browser/              Node.js Playwright bridge (bridge.js)
-test/                      ~35 test files mirroring lib/ structure
+test/                      ~40 test files mirroring lib/ structure
 ```
 
 ## Architecture
@@ -78,6 +80,7 @@ Traitee.Application
 ├── Memory.Compactor (GenServer — async STM→MTM→LTM)
 ├── Memory.BatchEmbedder (GenServer — batches of 20)
 ├── Skills.Registry (GenServer — 60s rescan)
+├── Security.Audit (GenServer — filesystem audit trail, ETS ring buffer)
 ├── Security.Pairing (GenServer — DM approval codes)
 ├── AutoReply.Debouncer (GenServer — 500ms window)
 ├── Cron.Scheduler (GenServer — 15s tick)

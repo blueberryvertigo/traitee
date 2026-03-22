@@ -189,7 +189,22 @@ defmodule Traitee.Security.OutputGuard do
     {~r/yes,?\s+(I\s+)?(detect|see|notice|recognize)\s+(the\s+)?(injection|manipulation|jailbreak|trick|attack).{0,20}(but\s+I'?ll|however\s+I'?ll|I'?ll\s+still|I\s+will\s+still|anyway)/i,
      :manipulation_awareness, :critical, "detects attack but complies"},
     {~r/I\s+(shouldn'?t|should\s+not)\s+(be\s+)?(telling|showing|revealing|sharing|disclosing|giving)\s+(you\s+)?this/i,
-     :manipulation_awareness, :high, "acknowledges forbidden disclosure"}
+     :manipulation_awareness, :high, "acknowledges forbidden disclosure"},
+
+    # ── Filesystem Content Leakage (last line of defense) ──
+    {~r/-----BEGIN\s+(RSA\s+|EC\s+|DSA\s+|OPENSSH\s+|ENCRYPTED\s+)?PRIVATE\s+KEY-----/,
+     :secret_leakage, :critical, "private key material in response"},
+    {~r/ssh-(rsa|ed25519|ecdsa|dsa)\s+AAAA[A-Za-z0-9+\/]{40,}/,
+     :secret_leakage, :critical, "SSH key in response"},
+    {~r/\bsk-[a-zA-Z0-9]{20,}\b/, :secret_leakage, :critical, "OpenAI API key in response"},
+    {~r/\bxai-[a-zA-Z0-9]{20,}\b/, :secret_leakage, :critical, "xAI API key in response"},
+    {~r/\bghp_[a-zA-Z0-9]{36,}\b/, :secret_leakage, :critical, "GitHub PAT in response"},
+    {~r/\bAKIA[A-Z0-9]{16}\b/, :secret_leakage, :critical, "AWS access key in response"},
+    {~r/\bAIza[a-zA-Z0-9\-_]{35}\b/, :secret_leakage, :critical, "Google API key in response"},
+    {~r/(password|passwd|pwd)\s*[:=]\s*["']?[^\s"']{8,}/i,
+     :secret_leakage, :high, "password assignment in response"},
+    {~r{(postgres|mysql|mongodb|redis)://[^:]+:[^@]+@}i,
+     :secret_leakage, :critical, "database URL with credentials in response"}
   ]
 
   @safe_fallback "I'm sorry, I wasn't able to generate an appropriate response. Could you try rephrasing your question?"

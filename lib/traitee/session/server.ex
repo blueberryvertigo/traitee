@@ -16,7 +16,7 @@ defmodule Traitee.Session.Server do
   alias Traitee.LLM.Router, as: LLMRouter
   alias Traitee.Memory.Compactor
   alias Traitee.Memory.STM
-  alias Traitee.Security.{Audit, Cognitive, Judge, OutputGuard, Sanitizer, ThreatTracker}
+  alias Traitee.Security.{Audit, Cognitive, IOGuard, Judge, OutputGuard, Sanitizer, ThreatTracker}
   alias Traitee.Tools.Registry, as: ToolRegistry
 
   require Logger
@@ -266,16 +266,7 @@ defmodule Traitee.Session.Server do
           if name == "channel_send", do: Map.put(a, "_session_channels", state.channels), else: a
         end)
 
-      result =
-        case ToolRegistry.execute(name, args_with_context) do
-          {:ok, output} ->
-            track_tool_output(name, output, state.session_id)
-            output
-
-          {:error, reason} ->
-            track_tool_denial(name, reason, state.session_id)
-            "Error: #{inspect(reason)}"
-        end
+      result = guarded_execute(name, args_with_context, state.session_id)
 
       %{
         role: "tool",
@@ -284,6 +275,34 @@ defmodule Traitee.Session.Server do
         content: result
       }
     end)
+  end
+
+  defp guarded_execute(name, args, session_id) do
+    case IOGuard.check_input(name, args) do
+      :ok ->
+        IOGuard.safe_execute(name, fn ->
+          ToolRegistry.execute(name, args)
+        end)
+        |> apply_output_guard_to_tool(name, session_id)
+
+      {:error, reason} ->
+        track_tool_denial(name, reason, session_id)
+        "Error: #{reason}"
+    end
+  end
+
+  defp apply_output_guard_to_tool({:ok, output}, name, session_id) do
+    track_tool_output(name, output, session_id)
+
+    case IOGuard.check_output(name, output) do
+      {:clean, clean_output} -> clean_output
+      {:redacted, redacted, _types} -> redacted
+    end
+  end
+
+  defp apply_output_guard_to_tool({:error, reason}, name, session_id) do
+    track_tool_denial(name, reason, session_id)
+    "Error: #{inspect(reason)}"
   end
 
   defp track_tool_output(tool_name, output, session_id) when tool_name in ["bash", "file"] do
