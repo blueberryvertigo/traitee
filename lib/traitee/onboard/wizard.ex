@@ -38,6 +38,8 @@ defmodule Traitee.Onboard.Wizard do
   }
 
   def run do
+    wipe_previous()
+
     welcome()
     |> step_llm_provider()
     |> step_embeddings()
@@ -56,6 +58,35 @@ defmodule Traitee.Onboard.Wizard do
       puts(
         "\n#{ANSI.yellow()}Setup interrupted. Run `mix traitee.onboard` to try again.#{ANSI.reset()}"
       )
+  end
+
+  # -- Wipe --
+
+  defp wipe_previous do
+    for provider <- CredentialStore.list_providers() do
+      creds = CredentialStore.load_all(provider)
+
+      for {key, _} <- creds do
+        CredentialStore.delete(provider, key)
+      end
+    end
+
+    for app_key <- [
+          :openai_api_key,
+          :anthropic_api_key,
+          :xai_api_key,
+          :discord_bot_token,
+          :telegram_bot_token,
+          :whatsapp_token
+        ] do
+      Application.delete_env(:traitee, app_key)
+    end
+
+    config_path = Traitee.config_path()
+    if File.exists?(config_path), do: File.rm!(config_path)
+
+    approved_path = Path.join(Traitee.data_dir(), "approved_senders.json")
+    if File.exists?(approved_path), do: File.rm!(approved_path)
   end
 
   # -- Steps --
@@ -582,6 +613,8 @@ defmodule Traitee.Onboard.Wizard do
 
     Config: #{Traitee.config_path()}
     Data:   #{Traitee.data_dir()}
+
+    #{ANSI.yellow()}#{ANSI.bright()}WARNING: Running `mix traitee.onboard` again will wipe all these values.#{ANSI.reset()}
     """)
 
     state
