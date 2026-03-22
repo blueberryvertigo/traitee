@@ -62,6 +62,28 @@ defmodule Traitee.Config do
           timeout_ms: 3_000,
           min_message_length: 10
         }
+      },
+      filesystem: %{
+        sandbox_mode: true,
+        default_policy: "deny",
+        allow: [],
+        deny: [],
+        command_deny: [],
+        working_dir: nil,
+        docker: %{
+          enabled: false,
+          image: "alpine:latest",
+          memory: "256m",
+          cpus: "0.5",
+          network: "none"
+        },
+        exec_gate: %{
+          enabled: true,
+          rules: []
+        },
+        audit: %{
+          enabled: true
+        }
       }
     },
     gateway: %{

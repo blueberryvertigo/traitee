@@ -17,7 +17,8 @@ defmodule Traitee.Doctor do
       check_disk_space(),
       check_config(),
       check_sessions(),
-      check_security()
+      check_security(),
+      check_filesystem_security()
     ]
   end
 
@@ -219,6 +220,48 @@ defmodule Traitee.Doctor do
     else
       result(:security, :warning, Enum.join(warnings, "; "))
     end
+  end
+
+  defp check_filesystem_security do
+    posture = Traitee.Security.Filesystem.posture_summary()
+    gaps = posture.gaps
+
+    warnings =
+      []
+      |> then(fn w -> if posture.sandbox_mode, do: w, else: ["sandbox mode OFF" | w] end)
+      |> then(fn w -> if posture.default_policy == :allow, do: ["default policy is allow-all" | w], else: w end)
+      |> then(fn w ->
+        if posture.allow_rules_count == 0 and posture.default_policy != :deny,
+          do: ["no allow rules configured" | w],
+          else: w
+      end)
+      |> then(fn w -> if posture.exec_gate_enabled, do: w, else: ["exec gates disabled" | w] end)
+      |> then(fn w -> if posture.audit_enabled, do: w, else: ["audit trail disabled" | w] end)
+
+    msg_parts =
+      [
+        "sandbox=#{posture.sandbox_mode}",
+        "policy=#{posture.default_policy}",
+        "allow=#{posture.allow_rules_count}",
+        "deny=#{posture.deny_rules_count}",
+        "docker=#{posture.docker_enabled}",
+        "exec_gate=#{posture.exec_gate_enabled}",
+        "audit=#{posture.audit_enabled}"
+      ]
+
+    msg_parts =
+      if gaps != [], do: msg_parts ++ ["#{length(gaps)} gap(s) detected"], else: msg_parts
+
+    status =
+      cond do
+        length(gaps) > 3 -> :warning
+        warnings != [] -> :warning
+        true -> :ok
+      end
+
+    result(:filesystem_security, status, Enum.join(msg_parts, ", "))
+  rescue
+    _ -> result(:filesystem_security, :warning, "Could not inspect filesystem security")
   end
 
   # -- Helpers --

@@ -42,7 +42,7 @@ dm_policy = "pairing"          # "open" | "pairing" | "closed" (default: pairing
 bash = { enabled = true, sandbox = true }  # sandbox = true: command blocklist, env scrubbing, working dir jail
 # bash.working_dir = "/path/to/sandbox"   # Override sandbox working directory (default: ~/.traitee/sandbox)
 file = { enabled = true }
-# file.allowed_paths = ["/home/user/projects", "/tmp"]  # Restrict file tool to these directories (empty = no restriction)
+# file.allowed_paths = ["/home/user/projects", "/tmp"]  # Legacy — use security.filesystem.allow instead
 web_search = { enabled = false }
 browser = { enabled = false }
 
@@ -69,6 +69,84 @@ enabled = true
 model = "xai/grok-4-1-fast-non-reasoning"
 timeout_ms = 3000          # Max wait for judge verdict before failing open
 min_message_length = 10    # Skip judging very short messages
+
+# ──────────────────────────────────────────────
+# Filesystem Security
+# ──────────────────────────────────────────────
+
+[security.filesystem]
+sandbox_mode = true        # Global sandbox enforcement (commands validated, env scrubbed, dirs jailed)
+default_policy = "deny"    # "deny" | "read_only" | "allow" — what happens when no rules match
+# working_dir = "/path/to/sandbox"  # Override sandbox working directory
+
+# Per-path allow rules: grant read and/or write access to specific directories.
+# Paths support glob patterns: ** matches any depth, * matches within a directory.
+# The Traitee data dir (~/.traitee) is always accessible.
+#
+# [[security.filesystem.allow]]
+# pattern = "/home/user/projects/**"
+# permissions = ["read", "write"]
+#
+# [[security.filesystem.allow]]
+# pattern = "/tmp/**"
+# permissions = ["read", "write"]
+#
+# [[security.filesystem.allow]]
+# pattern = "/var/log/**"
+# permissions = ["read"]
+
+# Per-path deny rules: block access to specific paths (evaluated before allow rules).
+# Hardcoded deny patterns (.ssh, .aws, .env, credentials, etc.) are always enforced.
+#
+# [[security.filesystem.deny]]
+# pattern = "/home/user/.config/sensitive/**"
+#
+# [[security.filesystem.deny]]
+# pattern = "**/production.secret.exs"
+
+# Additional command deny patterns (strings, matched case-insensitively).
+# Hardcoded patterns (curl|sh, netcat, fork bombs, etc.) are always enforced.
+#
+# command_deny = ["docker run", "kubectl exec"]
+
+# ──────────────────────────────────────────────
+# Docker Isolation (optional OS-level sandboxing)
+# ──────────────────────────────────────────────
+
+[security.filesystem.docker]
+enabled = false            # Run tool commands inside ephemeral Docker containers
+image = "alpine:latest"    # Base image for sandbox containers
+memory = "256m"            # Memory limit per container
+cpus = "0.5"               # CPU limit per container
+network = "none"           # Network mode: "none" (no network), "bridge", "host"
+
+# ──────────────────────────────────────────────
+# Exec Approval Gates
+# ──────────────────────────────────────────────
+
+[security.filesystem.exec_gate]
+enabled = true             # Enable execution approval gates
+
+# Custom gate rules. Each rule matches command text and applies an action.
+# Actions: "approve" (silent), "warn" (log + allow), "deny" (block)
+# Default gates cover: rm, chmod, git push, npm publish, curl, wget, docker, sudo
+#
+# [[security.filesystem.exec_gate.rules]]
+# pattern = "pip install*"
+# action = "deny"
+# description = "Block package installation"
+#
+# [[security.filesystem.exec_gate.rules]]
+# pattern = "terraform *"
+# action = "warn"
+# description = "Infrastructure changes"
+
+# ──────────────────────────────────────────────
+# Security Audit Trail
+# ──────────────────────────────────────────────
+
+[security.filesystem.audit]
+enabled = true             # Log all filesystem access decisions for posture monitoring
 
 [gateway]
 port = 4000

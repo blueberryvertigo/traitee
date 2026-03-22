@@ -16,7 +16,7 @@ defmodule Traitee.Session.Server do
   alias Traitee.LLM.Router, as: LLMRouter
   alias Traitee.Memory.Compactor
   alias Traitee.Memory.STM
-  alias Traitee.Security.{Cognitive, Judge, OutputGuard, Sanitizer, ThreatTracker}
+  alias Traitee.Security.{Audit, Cognitive, Judge, OutputGuard, Sanitizer, ThreatTracker}
   alias Traitee.Tools.Registry, as: ToolRegistry
 
   require Logger
@@ -260,16 +260,21 @@ defmodule Traitee.Session.Server do
       args = parse_args(func["arguments"])
 
       args_with_context =
-        if name == "channel_send" do
-          Map.put(args, "_session_channels", state.channels)
-        else
-          args
-        end
+        args
+        |> Map.put("_session_id", state.session_id)
+        |> then(fn a ->
+          if name == "channel_send", do: Map.put(a, "_session_channels", state.channels), else: a
+        end)
 
       result =
         case ToolRegistry.execute(name, args_with_context) do
-          {:ok, output} -> output
-          {:error, reason} -> "Error: #{inspect(reason)}"
+          {:ok, output} ->
+            track_tool_output(name, output, state.session_id)
+            output
+
+          {:error, reason} ->
+            track_tool_denial(name, reason, state.session_id)
+            "Error: #{inspect(reason)}"
         end
 
       %{
@@ -279,6 +284,38 @@ defmodule Traitee.Session.Server do
         content: result
       }
     end)
+  end
+
+  defp track_tool_output(tool_name, output, session_id) when tool_name in ["bash", "file"] do
+    if cogsec_output_contains_path_data?(output) do
+      Audit.record(:cogsec_tool_output, %{
+        tool: tool_name,
+        session_id: session_id,
+        output_size: String.length(output),
+        decision: :allow,
+        reason: "tool output tracked for cogsec"
+      })
+    end
+  rescue
+    _ -> :ok
+  end
+
+  defp track_tool_output(_tool, _output, _sid), do: :ok
+
+  defp track_tool_denial(tool_name, reason, session_id) do
+    Audit.record(:tool_denial, %{
+      tool: tool_name,
+      session_id: session_id,
+      decision: :deny,
+      reason: inspect(reason)
+    })
+  rescue
+    _ -> :ok
+  end
+
+  defp cogsec_output_contains_path_data?(output) do
+    byte_size(output) > 500 or
+      Regex.match?(~r{(^|\n)(/|[A-Z]:\\)}, output)
   end
 
   defp track_channel(state, channel, opts) do

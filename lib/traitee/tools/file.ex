@@ -1,7 +1,11 @@
 defmodule Traitee.Tools.File do
   @moduledoc """
-  File system operations tool with sandbox enforcement.
-  All operations are validated against `Traitee.Security.Sandbox` before execution.
+  File system operations tool with centralized sandbox enforcement.
+
+  All operations are validated against the filesystem policy engine:
+  hardcoded deny lists, configured allow/deny rules, per-path permissions,
+  and exec gates for write operations. Every access attempt is recorded
+  in the security audit trail.
   """
 
   @behaviour Traitee.Tools.Tool
@@ -45,8 +49,9 @@ defmodule Traitee.Tools.File do
   def execute(%{"operation" => op, "path" => path} = args) do
     path = Path.expand(path)
     operation = classify_operation(op)
+    session_id = args["_session_id"]
 
-    with :ok <- Sandbox.check_path(path, operation: operation) do
+    with :ok <- Sandbox.check_path(path, operation: operation, tool: "file", session_id: session_id) do
       case op do
         "read" -> read_file(path)
         "write" -> write_file(path, args["content"] || "")
