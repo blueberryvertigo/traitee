@@ -1,8 +1,8 @@
 defmodule Traitee.Security.ThreatTrackerTest do
   use ExUnit.Case, async: false
 
-  alias Traitee.Security.ThreatTracker
   alias Traitee.Security.Sanitizer.Threat
+  alias Traitee.Security.ThreatTracker
 
   setup do
     ThreatTracker.init()

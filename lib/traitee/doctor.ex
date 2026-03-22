@@ -69,12 +69,10 @@ defmodule Traitee.Doctor do
     config = Traitee.Config.all()
     agent = Map.get(config, :agent, %{})
 
-    cond do
-      agent[:model] ->
-        result(:llm_provider, :ok, "Model configured: #{agent[:model]}")
-
-      true ->
-        result(:llm_provider, :error, "No LLM model configured")
+    if agent[:model] do
+      result(:llm_provider, :ok, "Model configured: #{agent[:model]}")
+    else
+      result(:llm_provider, :error, "No LLM model configured")
     end
   end
 
@@ -114,7 +112,7 @@ defmodule Traitee.Doctor do
         missing = Enum.reject(list, fn {_, ok} -> ok end) |> Enum.map(fn {n, _} -> n end)
 
         if missing == [] do
-          names = Enum.map(list, fn {n, _} -> n end) |> Enum.join(", ")
+          names = Enum.map_join(list, ", ", fn {n, _} -> n end)
           result(:channels, :ok, "Enabled: #{names}")
         else
           result(:channels, :warning, "Missing tokens for: #{Enum.join(missing, ", ")}")
@@ -141,25 +139,26 @@ defmodule Traitee.Doctor do
 
       _ ->
         case System.cmd("df", ["-m", dir], stderr_to_stdout: true) do
-          {output, 0} ->
-            lines = String.split(output, "\n", trim: true)
-
-            if length(lines) >= 2 do
-              parts = lines |> List.last() |> String.split(~r/\s+/, trim: true)
-              avail = parts |> Enum.at(3, "0") |> String.to_integer()
-
-              if avail < 100 do
-                result(:disk_space, :warning, "Only #{avail}MB free in #{dir}")
-              else
-                result(:disk_space, :ok, "#{avail}MB free")
-              end
-            else
-              result(:disk_space, :ok, "Could not parse disk info")
-            end
-
-          _ ->
-            result(:disk_space, :ok, "Could not check disk space")
+          {output, 0} -> parse_disk_output(output, dir)
+          _ -> result(:disk_space, :ok, "Could not check disk space")
         end
+    end
+  end
+
+  defp parse_disk_output(output, dir) do
+    lines = String.split(output, "\n", trim: true)
+
+    if length(lines) >= 2 do
+      parts = lines |> List.last() |> String.split(~r/\s+/, trim: true)
+      avail = parts |> Enum.at(3, "0") |> String.to_integer()
+
+      if avail < 100 do
+        result(:disk_space, :warning, "Only #{avail}MB free in #{dir}")
+      else
+        result(:disk_space, :ok, "#{avail}MB free")
+      end
+    else
+      result(:disk_space, :ok, "Could not parse disk info")
     end
   end
 

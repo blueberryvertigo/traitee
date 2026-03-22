@@ -1,7 +1,7 @@
 defmodule Traitee.Security.CognitiveTest do
   use ExUnit.Case, async: false
 
-  alias Traitee.Security.{Cognitive, ThreatTracker, Canary}
+  alias Traitee.Security.{Canary, Cognitive, ThreatTracker}
   alias Traitee.Security.Sanitizer.Threat
 
   setup do
@@ -25,14 +25,14 @@ defmodule Traitee.Security.CognitiveTest do
 
     test "positional reminder at interval boundary", %{session: session} do
       reminders = Cognitive.reminders_for(session, message_count: 8)
-      assert length(reminders) >= 1
+      assert reminders != []
       assert hd(reminders).role == "system"
       assert String.contains?(hd(reminders).content, "[Cognitive Security]")
     end
 
     test "reactive reminder when threats detected", %{session: session} do
       reminders = Cognitive.reminders_for(session, message_count: 3, has_recent_threats: true)
-      assert length(reminders) >= 1
+      assert reminders != []
       assert Enum.any?(reminders, &String.contains?(&1.content, "[Security Alert]"))
     end
 
@@ -47,7 +47,7 @@ defmodule Traitee.Security.CognitiveTest do
       for _ <- 1..5, do: ThreatTracker.record(session, threat)
 
       reminders = Cognitive.reminders_for(session, message_count: 8)
-      assert length(reminders) >= 1
+      assert reminders != []
       content = hd(reminders).content
       assert String.contains?(content, "CRITICAL") or String.contains?(content, "IMPORTANT")
     end

@@ -11,8 +11,8 @@ defmodule Traitee.Security.Judge do
   timeout or error so it never blocks the pipeline.
   """
 
-  alias Traitee.Security.Sanitizer.Threat
   alias Traitee.LLM.XAI
+  alias Traitee.Security.Sanitizer.Threat
 
   require Logger
 
@@ -53,9 +53,7 @@ defmodule Traitee.Security.Judge do
 
   @spec evaluate(String.t(), keyword()) :: {:ok, result()} | {:error, term()}
   def evaluate(text, opts \\ []) do
-    if not enabled?() do
-      {:ok, %{verdict: :safe, reason: "judge disabled", categories: []}}
-    else
+    if enabled?() do
       min_length = judge_config(:min_message_length) || @default_min_length
 
       if String.length(text) < min_length do
@@ -63,6 +61,8 @@ defmodule Traitee.Security.Judge do
       else
         do_evaluate(text, opts)
       end
+    else
+      {:ok, %{verdict: :safe, reason: "judge disabled", categories: []}}
     end
   end
 

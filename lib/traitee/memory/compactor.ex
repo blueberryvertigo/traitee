@@ -12,7 +12,7 @@ defmodule Traitee.Memory.Compactor do
   use GenServer
 
   alias Traitee.LLM.Router
-  alias Traitee.Memory.{MTM, LTM, Vector}
+  alias Traitee.Memory.{LTM, MTM, Vector}
 
   require Logger
 

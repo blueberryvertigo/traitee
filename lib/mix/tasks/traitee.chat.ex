@@ -10,9 +10,9 @@ defmodule Mix.Tasks.Traitee.Chat do
   """
   use Mix.Task
 
+  alias Traitee.AutoReply.CommandRegistry
   alias Traitee.Session
   alias Traitee.Session.Server, as: SessionServer
-  alias Traitee.AutoReply.CommandRegistry
 
   require Logger
 

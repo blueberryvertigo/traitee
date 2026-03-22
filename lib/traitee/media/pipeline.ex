@@ -160,9 +160,7 @@ defmodule Traitee.Media.Pipeline do
       Traitee.Config.get([:channels, :whatsapp, :token]) ||
         System.get_env("OPENAI_API_KEY")
 
-    unless api_key do
-      {:error, :no_api_key}
-    else
+    if api_key do
       url = "https://api.openai.com/v1/audio/transcriptions"
 
       boundary = "traitee-#{:erlang.unique_integer([:positive])}"
@@ -171,7 +169,7 @@ defmodule Traitee.Media.Pipeline do
 
       body =
         "--#{boundary}\r\n" <>
-          "Content-Disposition: form-data; name=\"file\"; filename=\"#{filename}\"\r\n" <>
+          ~s(Content-Disposition: form-data; name="file"; filename="#{filename}"\r\n) <>
           "Content-Type: application/octet-stream\r\n\r\n" <>
           file_data <>
           "\r\n--#{boundary}\r\n" <>
@@ -188,6 +186,8 @@ defmodule Traitee.Media.Pipeline do
         {:ok, %{body: body}} -> {:error, {:whisper_error, body}}
         {:error, reason} -> {:error, reason}
       end
+    else
+      {:error, :no_api_key}
     end
   end
 end

@@ -5,11 +5,11 @@ defmodule Traitee.Context.Engine do
   """
 
   alias Traitee.Context.{Budget, Continuity}
-  alias Traitee.Memory.{STM, MTM, Vector, HybridSearch, QueryExpansion}
   alias Traitee.LLM.{Router, Tokenizer}
+  alias Traitee.Memory.{HybridSearch, MTM, QueryExpansion, STM, Vector}
+  alias Traitee.Security.{Canary, Cognitive}
   alias Traitee.Skills.Loader, as: Skills
   alias Traitee.Workspace
-  alias Traitee.Security.{Cognitive, Canary}
 
   require Logger
 
@@ -45,17 +45,16 @@ defmodule Traitee.Context.Engine do
 
     {reminder_msgs, budget} = assemble_reminders(session_id, budget, opts)
 
+    sections = %{
+      ltm: ltm_msgs,
+      mtm: mtm_msgs,
+      stm: stm_msgs,
+      tools: tool_msgs,
+      reminders: reminder_msgs
+    }
+
     messages =
-      build_message_list(
-        system_prompt,
-        skills_section,
-        ltm_msgs,
-        mtm_msgs,
-        stm_msgs,
-        tool_msgs,
-        reminder_msgs,
-        current_message
-      )
+      build_message_list(system_prompt, skills_section, sections, current_message)
 
     log_budget_summary(budget)
     {messages, budget}
@@ -240,7 +239,7 @@ defmodule Traitee.Context.Engine do
     if all_summaries == [] do
       {[], Budget.record_usage(budget, :mtm, 0)}
     else
-      text = all_summaries |> Enum.map(& &1.content) |> Enum.join("\n---\n")
+      text = Enum.map_join(all_summaries, "\n---\n", & &1.content)
 
       {text, tokens} =
         Budget.truncate_to_budget(
@@ -303,7 +302,7 @@ defmodule Traitee.Context.Engine do
       if reminder_msgs == [] do
         {[], Budget.record_usage(budget, :reminders, 0)}
       else
-        text = reminder_msgs |> Enum.map(& &1.content) |> Enum.join("\n")
+        text = Enum.map_join(reminder_msgs, "\n", & &1.content)
         tokens = Tokenizer.count_tokens(text)
         capped = min(tokens, budget.reminder_budget)
 
@@ -323,16 +322,7 @@ defmodule Traitee.Context.Engine do
 
   # -- Message list assembly --
 
-  defp build_message_list(
-         system_prompt,
-         skills_section,
-         ltm_msgs,
-         mtm_msgs,
-         stm_msgs,
-         tool_msgs,
-         reminder_msgs,
-         current_msg
-       ) do
+  defp build_message_list(system_prompt, skills_section, sections, current_msg) do
     messages = []
 
     sys_content =
@@ -342,13 +332,16 @@ defmodule Traitee.Context.Engine do
       |> Enum.join("\n\n")
 
     messages =
-      if sys_content != "" do
-        messages ++ [%{role: "system", content: sys_content}]
-      else
+      if sys_content == "" do
         messages
+      else
+        messages ++ [%{role: "system", content: sys_content}]
       end
 
-    messages = messages ++ ltm_msgs ++ mtm_msgs ++ stm_msgs ++ tool_msgs ++ reminder_msgs
+    messages =
+      messages ++
+        sections.ltm ++ sections.mtm ++ sections.stm ++ sections.tools ++ sections.reminders
+
     messages ++ [%{role: "user", content: current_msg}]
   end
 
@@ -370,8 +363,7 @@ defmodule Traitee.Context.Engine do
         text =
           entities
           |> Enum.take(3)
-          |> Enum.map(fn r -> "- #{r.content}" end)
-          |> Enum.join("\n")
+          |> Enum.map_join("\n", fn r -> "- #{r.content}" end)
 
         parts ++ ["Entities:\n#{text}"]
       else
@@ -385,8 +377,7 @@ defmodule Traitee.Context.Engine do
           |> Enum.take(5)
           |> Enum.map(fn r -> resolve_content(r) end)
           |> Enum.reject(&is_nil/1)
-          |> Enum.map(fn c -> "- #{c}" end)
-          |> Enum.join("\n")
+          |> Enum.map_join("\n", fn c -> "- #{c}" end)
 
         parts ++ ["Facts:\n#{text}"]
       else

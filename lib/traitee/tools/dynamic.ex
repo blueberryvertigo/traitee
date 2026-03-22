@@ -4,6 +4,8 @@ defmodule Traitee.Tools.Dynamic do
   Supports bash template and script file executor types.
   """
 
+  alias Traitee.Process.Executor
+
   @max_output 10_000
   @default_timeout 30_000
 
@@ -19,7 +21,7 @@ defmodule Traitee.Tools.Dynamic do
   def execute(%{executor: {:bash, template}}, args) do
     command = interpolate(template, args)
 
-    case Traitee.Process.Executor.run(command, timeout_ms: @default_timeout) do
+    case Executor.run(command, timeout_ms: @default_timeout) do
       {:ok, %{stdout: output, exit_code: 0}} ->
         {:ok, truncate(output)}
 
@@ -45,7 +47,7 @@ defmodule Traitee.Tools.Dynamic do
         _ -> "echo #{shell_escape(json_args)} | #{shell_escape(path)}"
       end
 
-    case Traitee.Process.Executor.run(command, timeout_ms: @default_timeout) do
+    case Executor.run(command, timeout_ms: @default_timeout) do
       {:ok, %{stdout: output, exit_code: 0}} ->
         {:ok, truncate(output)}
 

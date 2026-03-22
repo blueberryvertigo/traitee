@@ -180,23 +180,7 @@ defmodule Traitee.Browser.Bridge do
     else
       case Jason.decode(line) do
         {:ok, %{"id" => id} = response} ->
-          case Map.pop(state.pending, id) do
-            {{from, timer_ref}, pending} ->
-              Process.cancel_timer(timer_ref)
-
-              reply =
-                if response["ok"] do
-                  {:ok, response["result"]}
-                else
-                  {:error, response["error"]}
-                end
-
-              GenServer.reply(from, reply)
-              %{state | pending: pending}
-
-            {nil, _} ->
-              state
-          end
+          dispatch_response(state, id, response)
 
         {:ok, _} ->
           state
@@ -208,6 +192,22 @@ defmodule Traitee.Browser.Bridge do
 
           state
       end
+    end
+  end
+
+  defp dispatch_response(state, id, response) do
+    case Map.pop(state.pending, id) do
+      {{from, timer_ref}, pending} ->
+        Process.cancel_timer(timer_ref)
+
+        reply =
+          if response["ok"], do: {:ok, response["result"]}, else: {:error, response["error"]}
+
+        GenServer.reply(from, reply)
+        %{state | pending: pending}
+
+      {nil, _} ->
+        state
     end
   end
 end

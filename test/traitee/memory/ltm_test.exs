@@ -57,7 +57,7 @@ defmodule Traitee.Memory.LTMTest do
       {:ok, _} = LTM.upsert_entity("Rust Language", "concept")
 
       results = LTM.search_entities("Elixir")
-      assert length(results) >= 1
+      assert results != []
       assert Enum.any?(results, &(&1.name == "Elixir Framework"))
     end
 
@@ -65,7 +65,7 @@ defmodule Traitee.Memory.LTMTest do
       {:ok, _} = LTM.upsert_entity("TeamLead", "person", "Manages the backend team")
 
       results = LTM.search_entities("backend")
-      assert length(results) >= 1
+      assert results != []
     end
 
     test "returns empty for no match" do
@@ -189,7 +189,7 @@ defmodule Traitee.Memory.LTMTest do
       {:ok, _} = LTM.add_fact(e.id, "ETS is for shared state", "extracted")
 
       results = LTM.search_facts("GenServer")
-      assert length(results) >= 1
+      assert results != []
       assert hd(results).content =~ "GenServer"
     end
 
@@ -209,8 +209,8 @@ defmodule Traitee.Memory.LTMTest do
 
       ctx = LTM.entity_context(e.id)
       assert ctx.entity.name == "ContextEntity"
-      assert length(ctx.facts) >= 1
-      assert length(ctx.relations) >= 1
+      assert ctx.facts != []
+      assert ctx.relations != []
     end
 
     test "returns nil for nonexistent entity" do

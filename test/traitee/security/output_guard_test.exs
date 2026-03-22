@@ -1,7 +1,7 @@
 defmodule Traitee.Security.OutputGuardTest do
   use ExUnit.Case, async: false
 
-  alias Traitee.Security.{OutputGuard, Canary, ThreatTracker}
+  alias Traitee.Security.{Canary, OutputGuard, ThreatTracker}
 
   setup do
     ThreatTracker.init()
@@ -26,7 +26,7 @@ defmodule Traitee.Security.OutputGuardTest do
   defp assert_violation(session, text, expected_category) do
     violations = OutputGuard.detect_violations(session, text)
 
-    assert length(violations) >= 1,
+    assert violations != [],
            "Expected violations for: #{inspect(text)}"
 
     assert Enum.any?(violations, &(&1.category == expected_category)),

@@ -1,7 +1,7 @@
 defmodule Traitee.Fixtures do
   @moduledoc "Test data factories for memory, sessions, and LLM types."
 
-  alias Traitee.LLM.Types.{CompletionRequest, CompletionResponse, ModelInfo, Message}
+  alias Traitee.LLM.Types.{CompletionRequest, CompletionResponse, Message, ModelInfo}
 
   def completion_request(overrides \\ %{}) do
     Map.merge(

@@ -2,7 +2,7 @@ defmodule Traitee.Memory.HybridSearch do
   @moduledoc "Hybrid vector + keyword search with configurable weights and MMR diversity."
 
   alias Traitee.LLM.Router
-  alias Traitee.Memory.{Vector, MTM, LTM, MMR, TemporalDecay}
+  alias Traitee.Memory.{LTM, MMR, MTM, TemporalDecay, Vector}
 
   @default_opts [
     limit: 10,

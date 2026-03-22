@@ -9,8 +9,8 @@ defmodule Traitee.Memory.STM do
   Each session has its own ETS table for lock-free reads.
   """
 
-  alias Traitee.Memory.{Compactor, Schema.Message}
   alias Traitee.LLM.Tokenizer
+  alias Traitee.Memory.{Compactor, Schema.Message}
 
   require Logger
 

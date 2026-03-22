@@ -5,6 +5,8 @@ defmodule Traitee.DataCase do
   """
   use ExUnit.CaseTemplate
 
+  alias Ecto.Adapters.SQL.Sandbox
+
   using do
     quote do
       alias Traitee.Repo
@@ -22,7 +24,7 @@ defmodule Traitee.DataCase do
   end
 
   def setup_sandbox(tags) do
-    pid = Ecto.Adapters.SQL.Sandbox.start_owner!(Traitee.Repo, shared: !tags[:async])
-    on_exit(fn -> Ecto.Adapters.SQL.Sandbox.stop_owner(pid) end)
+    pid = Sandbox.start_owner!(Traitee.Repo, shared: !tags[:async])
+    on_exit(fn -> Sandbox.stop_owner(pid) end)
   end
 end

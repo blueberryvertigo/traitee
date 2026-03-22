@@ -18,52 +18,68 @@ defmodule Mix.Tasks.Traitee.Pairing do
   def run(args) do
     case args do
       ["add", channel, sender_id] when channel in @valid_channels ->
-        key = "#{channel}:#{sender_id}"
-        approved = load_approved()
-        updated = Enum.uniq([key | approved])
-        save_approved(updated)
-        IO.puts("Approved #{sender_id} on #{channel}")
-        IO.puts("Restart the bot for changes to take effect.")
+        run_add(channel, sender_id)
 
       ["add", _channel, _sender_id] ->
         IO.puts("Unknown channel. Valid channels: #{Enum.join(@valid_channels, ", ")}")
 
       ["remove", channel, sender_id] when channel in @valid_channels ->
-        key = "#{channel}:#{sender_id}"
-        approved = load_approved()
-        updated = List.delete(approved, key)
-        save_approved(updated)
-        IO.puts("Removed #{sender_id} from #{channel}")
-        IO.puts("Restart the bot for changes to take effect.")
+        run_remove(channel, sender_id)
 
       ["list"] ->
-        approved = load_approved()
-        IO.puts("Approved senders (#{length(approved)}):")
-
-        if approved == [] do
-          IO.puts("  (none)")
-        else
-          Enum.each(approved, fn key ->
-            case String.split(key, ":", parts: 2) do
-              [channel, id] -> IO.puts("  #{id} [#{channel}]")
-              _ -> IO.puts("  #{key}")
-            end
-          end)
-        end
+        run_list()
 
       _ ->
-        IO.puts("""
-        Usage:
-          mix traitee.pairing list                          - Show approved senders
-          mix traitee.pairing add <channel> <sender_id>     - Approve a sender
-          mix traitee.pairing remove <channel> <sender_id>  - Revoke a sender
-
-        Channels: #{Enum.join(@valid_channels, ", ")}
-
-        Example:
-          mix traitee.pairing add telegram 7886908010
-        """)
+        print_usage()
     end
+  end
+
+  defp run_add(channel, sender_id) do
+    key = "#{channel}:#{sender_id}"
+    approved = load_approved()
+    updated = Enum.uniq([key | approved])
+    save_approved(updated)
+    IO.puts("Approved #{sender_id} on #{channel}")
+    IO.puts("Restart the bot for changes to take effect.")
+  end
+
+  defp run_remove(channel, sender_id) do
+    key = "#{channel}:#{sender_id}"
+    approved = load_approved()
+    updated = List.delete(approved, key)
+    save_approved(updated)
+    IO.puts("Removed #{sender_id} from #{channel}")
+    IO.puts("Restart the bot for changes to take effect.")
+  end
+
+  defp run_list do
+    approved = load_approved()
+    IO.puts("Approved senders (#{length(approved)}):")
+
+    if approved == [] do
+      IO.puts("  (none)")
+    else
+      Enum.each(approved, fn key ->
+        case String.split(key, ":", parts: 2) do
+          [channel, id] -> IO.puts("  #{id} [#{channel}]")
+          _ -> IO.puts("  #{key}")
+        end
+      end)
+    end
+  end
+
+  defp print_usage do
+    IO.puts("""
+    Usage:
+      mix traitee.pairing list                          - Show approved senders
+      mix traitee.pairing add <channel> <sender_id>     - Approve a sender
+      mix traitee.pairing remove <channel> <sender_id>  - Revoke a sender
+
+    Channels: #{Enum.join(@valid_channels, ", ")}
+
+    Example:
+      mix traitee.pairing add telegram 7886908010
+    """)
   end
 
   defp approved_path do

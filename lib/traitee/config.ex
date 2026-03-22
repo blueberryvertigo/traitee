@@ -37,7 +37,7 @@ defmodule Traitee.Config do
       webchat: %{enabled: true, dm_policy: "pairing"}
     },
     tools: %{
-      bash: %{enabled: true, sandbox: false},
+      bash: %{enabled: true, sandbox: true, working_dir: nil},
       file: %{enabled: true, allowed_paths: []},
       web_search: %{enabled: false, provider: nil, api_key: nil},
       browser: %{enabled: true, headless: true, timeout: 30_000},
@@ -151,11 +151,9 @@ defmodule Traitee.Config do
   # -- Private --
 
   defp get_config do
-    try do
-      :persistent_term.get({__MODULE__, :config})
-    rescue
-      ArgumentError -> load!()
-    end
+    :persistent_term.get({__MODULE__, :config})
+  rescue
+    ArgumentError -> load!()
   end
 
   defp load_toml do

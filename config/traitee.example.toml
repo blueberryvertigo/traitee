@@ -39,8 +39,10 @@ dm_policy = "pairing"          # "open" | "pairing" | "closed" (default: pairing
 # allow_from = ["+15551234567"] # Restrict to specific phone numbers
 
 [tools]
-bash = { enabled = true, sandbox = false }
+bash = { enabled = true, sandbox = true }  # sandbox = true: command blocklist, env scrubbing, working dir jail
+# bash.working_dir = "/path/to/sandbox"   # Override sandbox working directory (default: ~/.traitee/sandbox)
 file = { enabled = true }
+# file.allowed_paths = ["/home/user/projects", "/tmp"]  # Restrict file tool to these directories (empty = no restriction)
 web_search = { enabled = false }
 browser = { enabled = false }
 

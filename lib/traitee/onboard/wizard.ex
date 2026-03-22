@@ -2,6 +2,7 @@ defmodule Traitee.Onboard.Wizard do
   @moduledoc "Interactive onboarding wizard for first-time setup."
 
   alias IO.ANSI
+  alias Traitee.Daemon.Service
   alias Traitee.Secrets.CredentialStore
 
   @providers %{
@@ -573,11 +574,11 @@ defmodule Traitee.Onboard.Wizard do
 
   defp step_daemon(state) do
     puts(heading(state, "Background Service"))
-    platform = Traitee.Daemon.Service.platform()
+    platform = Service.platform()
     platform_name = platform |> to_string() |> String.capitalize()
 
     if confirm?("Install Traitee as a #{platform_name} background service?") do
-      case Traitee.Daemon.Service.install() do
+      case Service.install() do
         :ok ->
           puts("#{ANSI.green()}✓ Service installed#{ANSI.reset()}\n")
 

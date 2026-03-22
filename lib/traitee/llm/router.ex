@@ -9,7 +9,7 @@ defmodule Traitee.LLM.Router do
   """
   use GenServer
 
-  alias Traitee.LLM.{Provider, Types.CompletionRequest, Types.CompletionResponse}
+  alias Traitee.LLM.{Ollama, OpenAI, Provider, Types.CompletionRequest, Types.CompletionResponse}
 
   require Logger
 
@@ -128,16 +128,14 @@ defmodule Traitee.LLM.Router do
   @impl true
   def handle_call({:embed, texts}, _from, state) do
     result =
-      cond do
-        function_exported?(state.primary_provider, :embed, 1) ->
-          case state.primary_provider.embed(texts) do
-            {:ok, _} = ok -> ok
-            {:error, :not_supported} -> try_fallback_embed(texts, state)
-            error -> error
-          end
-
-        true ->
-          try_fallback_embed(texts, state)
+      if function_exported?(state.primary_provider, :embed, 1) do
+        case state.primary_provider.embed(texts) do
+          {:ok, _} = ok -> ok
+          {:error, :not_supported} -> try_fallback_embed(texts, state)
+          error -> error
+        end
+      else
+        try_fallback_embed(texts, state)
       end
 
     {:reply, result, state}
@@ -191,11 +189,11 @@ defmodule Traitee.LLM.Router do
       state.fallback_provider && function_exported?(state.fallback_provider, :embed, 1) ->
         state.fallback_provider.embed(texts)
 
-      Traitee.LLM.Ollama.configured?() ->
-        Traitee.LLM.Ollama.embed(texts)
+      Ollama.configured?() ->
+        Ollama.embed(texts)
 
-      Traitee.LLM.OpenAI.configured?() ->
-        Traitee.LLM.OpenAI.embed(texts)
+      OpenAI.configured?() ->
+        OpenAI.embed(texts)
 
       true ->
         {:error, :no_embedding_provider}
@@ -232,7 +230,7 @@ defmodule Traitee.LLM.Router do
   defp parse_or_default(model_string) do
     case Provider.parse_model(model_string) do
       {:ok, {mod, id}} -> {mod, id}
-      {:error, _} -> {Traitee.LLM.OpenAI, "gpt-4o"}
+      {:error, _} -> {OpenAI, "gpt-4o"}
     end
   end
 end

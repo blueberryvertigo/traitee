@@ -16,7 +16,8 @@ defmodule Traitee.Process.Executor do
     {shell, args} = shell_command(command)
 
     port_opts =
-      [:binary, :exit_status, :stderr_to_stdout, {:args, args}, {:env, env}] ++
+      [:binary, :exit_status, :stderr_to_stdout, {:args, args}] ++
+        if(env != [], do: [{:env, env}], else: []) ++
         if(working_dir, do: [{:cd, String.to_charlist(working_dir)}], else: [])
 
     try do

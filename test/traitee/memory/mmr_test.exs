@@ -40,10 +40,21 @@ defmodule Traitee.Memory.MMRTest do
     end
 
     test "lambda=0.0 maximizes diversity" do
-      candidates = mmr_candidates(5)
-      diverse_results = MMR.select(candidates, 3, 0.0)
-      relevance_results = MMR.select(candidates, 3, 1.0)
-      assert diverse_results != relevance_results or length(candidates) <= 1
+      candidates = [
+        %{id: 1, score: 0.9, embedding: [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], content: "A"},
+        %{id: 2, score: 0.8, embedding: [0.99, 0.01, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], content: "B"},
+        %{id: 3, score: 0.7, embedding: [0.98, 0.02, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], content: "C"},
+        %{id: 4, score: 0.6, embedding: [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], content: "D"},
+        %{id: 5, score: 0.5, embedding: [0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0], content: "E"}
+      ]
+
+      diverse_ids = candidates |> MMR.select(3, 0.0) |> Enum.map(& &1.id)
+      relevance_ids = candidates |> MMR.select(3, 1.0) |> Enum.map(& &1.id)
+
+      assert relevance_ids == [1, 2, 3]
+      assert diverse_ids != relevance_ids
+      assert 1 in diverse_ids
+      assert Enum.any?([4, 5], &(&1 in diverse_ids))
     end
 
     test "works with content-based similarity (no embeddings)" do

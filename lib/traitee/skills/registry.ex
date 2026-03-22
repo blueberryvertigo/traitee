@@ -6,6 +6,8 @@ defmodule Traitee.Skills.Registry do
 
   use GenServer
 
+  alias Traitee.Skills.Loader
+
   @scan_interval_ms 60_000
 
   def start_link(opts \\ []) do
@@ -23,7 +25,7 @@ defmodule Traitee.Skills.Registry do
   @impl true
   def init(_opts) do
     state = %{
-      skills: Traitee.Skills.Loader.scan(),
+      skills: Loader.scan(),
       loaded_sessions: %{}
     }
 
@@ -43,7 +45,7 @@ defmodule Traitee.Skills.Registry do
     if Map.has_key?(state.loaded_sessions, session_key) do
       {:reply, {:already_loaded, skill_name}, state}
     else
-      case Traitee.Skills.Loader.load_skill(skill_name) do
+      case Loader.load_skill(skill_name) do
         {:ok, content} ->
           loaded = Map.put(state.loaded_sessions, session_key, true)
           {:reply, {:ok, content}, %{state | loaded_sessions: loaded}}
@@ -56,8 +58,8 @@ defmodule Traitee.Skills.Registry do
 
   @impl true
   def handle_info(:scan, state) do
-    Traitee.Skills.Loader.invalidate_cache()
-    skills = Traitee.Skills.Loader.scan()
+    Loader.invalidate_cache()
+    skills = Loader.scan()
     schedule_scan()
     {:noreply, %{state | skills: skills}}
   end

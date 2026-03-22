@@ -6,8 +6,8 @@ defmodule Traitee.Tools.Memory do
 
   @behaviour Traitee.Tools.Tool
 
-  alias Traitee.Memory.LTM
   alias Traitee.Context.Continuity
+  alias Traitee.Memory.LTM
 
   @impl true
   def name, do: "memory"

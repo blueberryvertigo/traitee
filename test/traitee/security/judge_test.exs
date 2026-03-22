@@ -306,7 +306,7 @@ defmodule Traitee.Security.JudgeTest do
       assert result.verdict in [:suspicious, :malicious]
 
       threats = Judge.to_threats(result)
-      assert length(threats) >= 1
+      assert threats != []
       assert Enum.all?(threats, &(&1.category == :llm_judge))
 
       if result.verdict == :malicious do

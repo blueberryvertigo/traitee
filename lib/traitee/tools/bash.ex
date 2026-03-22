@@ -1,7 +1,13 @@
 defmodule Traitee.Tools.Bash do
-  @moduledoc "Shell command execution tool with cross-platform Windows/Unix support."
+  @moduledoc """
+  Shell command execution tool with cross-platform Windows/Unix support.
+  When sandbox mode is enabled, commands are validated against a blocklist,
+  environment variables are scrubbed, and execution is jailed to a working directory.
+  """
 
   @behaviour Traitee.Tools.Tool
+
+  alias Traitee.Security.Sandbox
 
   @max_output 10_000
   @default_timeout 30_000
@@ -38,28 +44,61 @@ defmodule Traitee.Tools.Bash do
 
   @impl true
   def execute(%{"command" => command} = args) do
-    working_dir = args["working_directory"]
+    sandboxed? = Sandbox.sandbox_enabled?()
     timeout = args["timeout"] || @default_timeout
 
-    case Traitee.Process.Executor.run(command,
-           timeout_ms: timeout,
-           working_dir: working_dir
-         ) do
-      {:ok, %{stdout: output, exit_code: 0}} ->
-        {:ok, truncate(output)}
+    with :ok <- maybe_check_command(command, sandboxed?) do
+      working_dir = resolve_working_dir(args["working_directory"], sandboxed?)
+      env = if sandboxed?, do: Sandbox.scrubbed_env(), else: []
 
-      {:ok, %{stdout: output, exit_code: code}} ->
-        {:ok, "Exit code #{code}:\n#{truncate(output)}"}
+      case Traitee.Process.Executor.run(command,
+             timeout_ms: timeout,
+             working_dir: working_dir,
+             env: env
+           ) do
+        {:ok, %{stdout: output, exit_code: 0}} ->
+          {:ok, truncate(output)}
 
-      {:error, :timeout} ->
-        {:error, "Command timed out after #{timeout}ms"}
+        {:ok, %{stdout: output, exit_code: code}} ->
+          {:ok, "Exit code #{code}:\n#{truncate(output)}"}
 
-      {:error, reason} ->
-        {:error, "Command failed: #{inspect(reason)}"}
+        {:error, :timeout} ->
+          {:error, "Command timed out after #{timeout}ms"}
+
+        {:error, reason} ->
+          {:error, "Command failed: #{inspect(reason)}"}
+      end
     end
   end
 
   def execute(_), do: {:error, "Missing required parameter: command"}
+
+  defp maybe_check_command(command, true), do: Sandbox.check_command(command)
+  defp maybe_check_command(_command, false), do: :ok
+
+  defp resolve_working_dir(nil, true) do
+    dir = Sandbox.sandbox_working_dir()
+    File.mkdir_p!(dir)
+    dir
+  end
+
+  defp resolve_working_dir(dir, true) when is_binary(dir) do
+    sandbox_root = Sandbox.sandbox_working_dir()
+    expanded = Path.expand(dir)
+
+    normalized_root = String.replace(sandbox_root, "\\", "/")
+    normalized_dir = String.replace(expanded, "\\", "/")
+
+    if String.starts_with?(normalized_dir, normalized_root) do
+      File.mkdir_p!(expanded)
+      expanded
+    else
+      File.mkdir_p!(sandbox_root)
+      sandbox_root
+    end
+  end
+
+  defp resolve_working_dir(dir, false), do: dir
 
   defp truncate(output) do
     if String.length(output) > @max_output do

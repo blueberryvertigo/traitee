@@ -9,6 +9,8 @@ defmodule Traitee.LLM.Tokenizer do
   A Rustler NIF wrapping tiktoken-rs can replace this for exact counts.
   """
 
+  alias Traitee.LLM.Provider
+
   @chars_per_token 4.0
   @overhead_per_message 4
 
@@ -48,7 +50,7 @@ defmodule Traitee.LLM.Tokenizer do
   Returns the context window size for a given model string.
   """
   def context_window(model_string) do
-    case Traitee.LLM.Provider.parse_model(model_string) do
+    case Provider.parse_model(model_string) do
       {:ok, {module, model_id}} ->
         info = module.model_info(model_id)
         info.context_window
@@ -62,7 +64,7 @@ defmodule Traitee.LLM.Tokenizer do
   Returns the max output tokens for a given model string.
   """
   def max_output(model_string) do
-    case Traitee.LLM.Provider.parse_model(model_string) do
+    case Provider.parse_model(model_string) do
       {:ok, {module, model_id}} ->
         info = module.model_info(model_id)
         info.max_output_tokens

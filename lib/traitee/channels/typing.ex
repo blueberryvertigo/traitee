@@ -48,11 +48,9 @@ defmodule Traitee.Channels.Typing do
   end
 
   defp send_typing(:discord, channel_id) do
-    try do
-      Nostrum.Api.Channel.start_typing(String.to_integer(channel_id))
-    rescue
-      _ -> :ok
-    end
+    Nostrum.Api.Channel.start_typing(String.to_integer(channel_id))
+  rescue
+    _ -> :ok
   end
 
   defp send_typing(:telegram, chat_id) do

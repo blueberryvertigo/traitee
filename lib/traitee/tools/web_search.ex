@@ -59,13 +59,12 @@ defmodule Traitee.Tools.WebSearch do
         formatted =
           results
           |> Enum.take(num)
-          |> Enum.map(fn r ->
+          |> Enum.map_join("\n\n---\n\n", fn r ->
             title = r["title"] || ""
             url = r["url"] || ""
             snippet = r["content"] || ""
             "#{title}\n#{url}\n#{snippet}"
           end)
-          |> Enum.join("\n\n---\n\n")
 
         {:ok, formatted}
 

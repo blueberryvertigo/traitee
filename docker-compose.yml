@@ -16,6 +16,10 @@ services:
     volumes:
       - traitee_data:/home/traitee/.traitee
     restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m
+      - /var/tmp:size=128m
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:4000/api/health"]
       interval: 30s
@@ -28,6 +32,12 @@ services:
       - ALL
     cap_add:
       - NET_BIND_SERVICE
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: "2.0"
+          pids: 256
 
 volumes:
   traitee_data:

@@ -1,7 +1,8 @@
 defmodule Traitee.Memory.HybridSearchTest do
   use ExUnit.Case, async: false
 
-  alias Traitee.Memory.{HybridSearch, MTM, LTM, Vector}
+  alias Ecto.Adapters.SQL.Sandbox
+  alias Traitee.Memory.{HybridSearch, LTM, MTM, Vector}
 
   import Traitee.TestHelpers
 
@@ -9,10 +10,10 @@ defmodule Traitee.Memory.HybridSearchTest do
     Vector.init()
     :ets.delete_all_objects(:traitee_vectors)
 
-    pid = Ecto.Adapters.SQL.Sandbox.start_owner!(Traitee.Repo, shared: true)
+    pid = Sandbox.start_owner!(Traitee.Repo, shared: true)
 
     on_exit(fn ->
-      Ecto.Adapters.SQL.Sandbox.stop_owner(pid)
+      Sandbox.stop_owner(pid)
 
       if :ets.whereis(:traitee_vectors) != :undefined do
         :ets.delete_all_objects(:traitee_vectors)
@@ -34,7 +35,7 @@ defmodule Traitee.Memory.HybridSearchTest do
       results = HybridSearch.search("Elixir GenServer", sid)
       assert is_list(results)
 
-      if length(results) > 0 do
+      if results != [] do
         assert Enum.any?(results, fn r -> r.source == :summary end)
       end
     end
@@ -47,10 +48,10 @@ defmodule Traitee.Memory.HybridSearchTest do
       results = HybridSearch.search("Phoenix plugs", sid)
       assert is_list(results)
 
-      if length(results) > 0 do
+      if results != [] do
         fact_results = Enum.filter(results, &(&1.source == :fact))
 
-        if length(fact_results) > 0 do
+        if fact_results != [] do
           assert hd(fact_results).content =~ "Phoenix"
         end
       end
@@ -63,7 +64,7 @@ defmodule Traitee.Memory.HybridSearchTest do
       results = HybridSearch.search("LiveView", sid)
       assert is_list(results)
       entity_results = Enum.filter(results, &(&1.source == :entity))
-      assert length(entity_results) >= 1
+      assert entity_results != []
     end
 
     test "returns empty for no matches" do
@@ -94,7 +95,7 @@ defmodule Traitee.Memory.HybridSearchTest do
 
       results = HybridSearch.search("HSTypeFilter", sid, source_types: [:fact])
 
-      if length(results) > 0 do
+      if results != [] do
         assert Enum.all?(results, &(&1.source == :fact))
       end
     end
@@ -119,8 +120,8 @@ defmodule Traitee.Memory.HybridSearchTest do
       results = HybridSearch.search("HSCross", sid)
       sources = Enum.map(results, & &1.source) |> Enum.uniq()
 
-      assert length(results) >= 1
-      assert length(sources) >= 1
+      assert results != []
+      assert sources != []
     end
   end
 end

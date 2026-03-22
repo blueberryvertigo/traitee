@@ -1,4 +1,6 @@
 defmodule TraiteeWeb.ChatChannel do
+  @moduledoc "Phoenix channel for webchat — bridges WebSocket messages to the router."
+
   use Phoenix.Channel
 
   alias Traitee.Channels.Channel

@@ -12,11 +12,12 @@ defmodule Traitee.Session.Server do
   """
   use GenServer, restart: :transient
 
-  alias Traitee.Memory.STM
-  alias Traitee.Context.{Engine, Continuity}
+  alias Traitee.Context.{Continuity, Engine}
   alias Traitee.LLM.Router, as: LLMRouter
+  alias Traitee.Memory.Compactor
+  alias Traitee.Memory.STM
+  alias Traitee.Security.{Cognitive, Judge, OutputGuard, Sanitizer, ThreatTracker}
   alias Traitee.Tools.Registry, as: ToolRegistry
-  alias Traitee.Security.{Sanitizer, ThreatTracker, OutputGuard, Cognitive, Judge}
 
   require Logger
 
@@ -187,8 +188,8 @@ defmodule Traitee.Session.Server do
     remaining = STM.get_messages(state.stm_state)
 
     if remaining != [] do
-      Traitee.Memory.Compactor.compact(state.session_id, remaining)
-      Traitee.Memory.Compactor.flush(state.session_id)
+      Compactor.compact(state.session_id, remaining)
+      Compactor.flush(state.session_id)
     end
 
     STM.destroy(state.stm_state)

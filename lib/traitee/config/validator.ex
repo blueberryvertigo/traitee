@@ -104,7 +104,7 @@ defmodule Traitee.Config.Validator do
   defp validate_gateway(errors, gateway) do
     case gateway[:port] do
       nil -> errors
-      port when is_integer(port) and port >= 1 and port <= 65535 -> errors
+      port when is_integer(port) and port >= 1 and port <= 65_535 -> errors
       port -> ["gateway.port must be 1-65535, got: #{inspect(port)}" | errors]
     end
   end

@@ -1,6 +1,7 @@
 defmodule Traitee.Channels.Streaming do
   @moduledoc "Stream LLM responses to channels incrementally."
 
+  alias Nostrum.Api.Message, as: NostrumMessage
   alias Traitee.Channels.Typing
 
   require Logger
@@ -111,14 +112,12 @@ defmodule Traitee.Channels.Streaming do
   end
 
   defp send_channel_message(:discord, channel_id, text) do
-    try do
-      case Nostrum.Api.Message.create(String.to_integer(channel_id), content: text) do
-        {:ok, msg} -> {:ok, msg.id}
-        error -> error
-      end
-    rescue
-      _ -> {:error, :discord_send_failed}
+    case NostrumMessage.create(String.to_integer(channel_id), content: text) do
+      {:ok, msg} -> {:ok, msg.id}
+      error -> error
     end
+  rescue
+    _ -> {:error, :discord_send_failed}
   end
 
   defp send_channel_message(:telegram, chat_id, text) do
@@ -135,11 +134,9 @@ defmodule Traitee.Channels.Streaming do
   defp send_channel_message(_, _, _), do: {:error, :unsupported}
 
   defp edit_channel_message(:discord, channel_id, msg_id, text) do
-    try do
-      Nostrum.Api.Message.edit(String.to_integer(channel_id), msg_id, content: text)
-    rescue
-      _ -> :ok
-    end
+    NostrumMessage.edit(String.to_integer(channel_id), msg_id, content: text)
+  rescue
+    _ -> :ok
   end
 
   defp edit_channel_message(:telegram, chat_id, msg_id, text) do

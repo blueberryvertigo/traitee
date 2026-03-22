@@ -1,6 +1,11 @@
 defmodule Traitee.AutoReply.CommandRegistry do
   @moduledoc "Command registry with argument parsing and authorization."
 
+  alias Traitee.Cron.Scheduler
+  alias Traitee.LLM.Router
+  alias Traitee.Memory.{Compactor, LTM, Vector}
+  alias Traitee.Routing.AgentRouter
+  alias Traitee.Security.Pairing
   alias Traitee.Session
 
   @type command_opts :: %{
@@ -168,7 +173,7 @@ defmodule Traitee.AutoReply.CommandRegistry do
   def cmd_verbose(_, _ctx), do: {:ok, "Usage: /verbose on|off"}
 
   def cmd_usage(_args, _ctx) do
-    stats = Traitee.LLM.Router.usage_stats()
+    stats = Router.usage_stats()
 
     text =
       "Requests: #{stats.requests}\n" <>
@@ -180,8 +185,8 @@ defmodule Traitee.AutoReply.CommandRegistry do
   end
 
   def cmd_status(_args, _ctx) do
-    info = Traitee.LLM.Router.model_info()
-    stats = Traitee.LLM.Router.usage_stats()
+    info = Router.model_info()
+    stats = Router.usage_stats()
     sessions = Session.list_active() |> length()
 
     text =
@@ -198,13 +203,13 @@ defmodule Traitee.AutoReply.CommandRegistry do
   end
 
   def cmd_memory(["entities" | _], _ctx) do
-    ltm = Traitee.Memory.LTM.stats()
+    ltm = LTM.stats()
     {:ok, "Entities: #{ltm.entities}, Relations: #{ltm.relations}"}
   end
 
   def cmd_memory(_args, _ctx) do
-    ltm = Traitee.Memory.LTM.stats()
-    vectors = Traitee.Memory.Vector.count()
+    ltm = LTM.stats()
+    vectors = Vector.count()
 
     text =
       "Entities: #{ltm.entities}\nRelations: #{ltm.relations}\n" <>
@@ -215,7 +220,7 @@ defmodule Traitee.AutoReply.CommandRegistry do
 
   def cmd_compact(_args, %{inbound: inbound}) do
     session_id = build_session_id(inbound)
-    Traitee.Memory.Compactor.flush(session_id)
+    Compactor.flush(session_id)
     {:ok, "Compaction triggered."}
   end
 
@@ -227,7 +232,7 @@ defmodule Traitee.AutoReply.CommandRegistry do
   end
 
   def cmd_cron(["list" | _], _ctx) do
-    jobs = Traitee.Cron.Scheduler.list_jobs()
+    jobs = Scheduler.list_jobs()
 
     if jobs == [] do
       {:ok, "No scheduled jobs."}
@@ -258,7 +263,7 @@ defmodule Traitee.AutoReply.CommandRegistry do
       enabled: true
     }
 
-    case Traitee.Cron.Scheduler.add_job(attrs) do
+    case Scheduler.add_job(attrs) do
       {:ok, job} ->
         {:ok, "Job '#{job.name}' added (#{job_type}, next: #{job.next_run_at || "now"})"}
 
@@ -268,28 +273,28 @@ defmodule Traitee.AutoReply.CommandRegistry do
   end
 
   def cmd_cron(["remove", name | _], _ctx) do
-    case Traitee.Cron.Scheduler.remove_job(name) do
+    case Scheduler.remove_job(name) do
       :ok -> {:ok, "Job '#{name}' removed."}
       {:error, :not_found} -> {:ok, "Job '#{name}' not found."}
     end
   end
 
   def cmd_cron(["run", name | _], _ctx) do
-    case Traitee.Cron.Scheduler.run_job(name) do
+    case Scheduler.run_job(name) do
       :ok -> {:ok, "Job '#{name}' executed."}
       {:error, :not_found} -> {:ok, "Job '#{name}' not found."}
     end
   end
 
   def cmd_cron(["pause", name | _], _ctx) do
-    case Traitee.Cron.Scheduler.pause_job(name) do
+    case Scheduler.pause_job(name) do
       :ok -> {:ok, "Job '#{name}' paused."}
       {:error, :not_found} -> {:ok, "Job '#{name}' not found."}
     end
   end
 
   def cmd_cron(["resume", name | _], _ctx) do
-    case Traitee.Cron.Scheduler.resume_job(name) do
+    case Scheduler.resume_job(name) do
       :ok -> {:ok, "Job '#{name}' resumed."}
       {:error, :not_found} -> {:ok, "Job '#{name}' not found."}
     end
@@ -309,7 +314,7 @@ defmodule Traitee.AutoReply.CommandRegistry do
   end
 
   def cmd_pairing(["approve", code | _], _ctx) do
-    case Traitee.Security.Pairing.approve(code) do
+    case Pairing.approve(code) do
       {:ok, key} -> {:ok, "Approved: #{key}"}
       {:error, :not_found} -> {:ok, "No pending pairing found for code: #{code}"}
     end
@@ -317,13 +322,13 @@ defmodule Traitee.AutoReply.CommandRegistry do
 
   def cmd_pairing(["revoke", channel, sender_id | _], _ctx) do
     key = "#{channel}:#{sender_id}"
-    Traitee.Security.Pairing.revoke(key)
+    Pairing.revoke(key)
     {:ok, "Revoked: #{key}"}
   end
 
   def cmd_pairing(["list" | _], _ctx) do
-    approved = Traitee.Security.Pairing.list_approved()
-    pending = Traitee.Security.Pairing.list_pending()
+    approved = Pairing.list_approved()
+    pending = Pairing.list_pending()
 
     approved_text =
       if approved == [],
@@ -354,7 +359,7 @@ defmodule Traitee.AutoReply.CommandRegistry do
   # -- Helpers --
 
   defp build_session_id(%{sender_id: sid, channel_type: ch}) do
-    Traitee.Routing.AgentRouter.build_session_key(
+    AgentRouter.build_session_key(
       "default",
       %{sender_id: sid, channel_type: ch},
       :per_peer
@@ -362,7 +367,7 @@ defmodule Traitee.AutoReply.CommandRegistry do
   end
 
   defp build_session_id(%{sender_id: sid}) do
-    Traitee.Routing.AgentRouter.build_session_key(
+    AgentRouter.build_session_key(
       "default",
       %{sender_id: sid, channel_type: nil},
       :per_peer

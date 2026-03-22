@@ -8,8 +8,8 @@ defmodule Traitee.Memory.MTM do
   """
 
   import Ecto.Query
-  alias Traitee.Repo
   alias Traitee.Memory.Schema.Summary
+  alias Traitee.Repo
 
   @doc """
   Creates a summary from a chunk of messages.
@@ -92,9 +92,7 @@ defmodule Traitee.Memory.MTM do
   """
   def summarization_prompt(messages) do
     formatted =
-      messages
-      |> Enum.map(fn msg -> "#{msg.role}: #{msg.content}" end)
-      |> Enum.join("\n")
+      Enum.map_join(messages, "\n", fn msg -> "#{msg.role}: #{msg.content}" end)
 
     """
     Analyze the following conversation segment and produce a JSON response with exactly two keys:

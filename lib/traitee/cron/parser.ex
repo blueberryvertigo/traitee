@@ -149,7 +149,7 @@ defmodule Traitee.Cron.Parser do
     |> Map.put(:day, 1)
     |> Map.put(:hour, 0)
     |> Map.put(:minute, 0)
-    |> DateTime.add(31 * 86400, :second)
+    |> DateTime.add(31 * 86_400, :second)
     |> then(fn shifted -> %{shifted | day: 1, hour: 0, minute: 0, second: 0} end)
   end
 
@@ -157,7 +157,7 @@ defmodule Traitee.Cron.Parser do
     dt
     |> Map.put(:hour, 0)
     |> Map.put(:minute, 0)
-    |> DateTime.add(86400, :second)
+    |> DateTime.add(86_400, :second)
     |> then(fn shifted -> %{shifted | hour: 0, minute: 0, second: 0} end)
   end
 

@@ -66,46 +66,42 @@ defmodule Traitee.Channels.WhatsApp do
   # -- Private --
 
   defp process_webhook(%{"entry" => entries}, _state) do
-    Enum.each(entries, fn entry ->
-      changes = entry["changes"] || []
-
-      Enum.each(changes, fn change ->
-        value = change["value"] || %{}
-        messages = value["messages"] || []
-
-        Enum.each(messages, fn msg ->
-          if msg["type"] == "text" do
-            text = get_in(msg, ["text", "body"])
-            from = msg["from"]
-
-            if text && from do
-              contact =
-                (value["contacts"] || [])
-                |> Enum.find(fn c -> c["wa_id"] == from end)
-
-              sender_name =
-                if contact, do: get_in(contact, ["profile", "name"]), else: nil
-
-              inbound =
-                Channel.build_inbound(
-                  text,
-                  from,
-                  :whatsapp,
-                  sender_name: sender_name,
-                  channel_id: from,
-                  reply_to: from,
-                  metadata: %{message_id: msg["id"], timestamp: msg["timestamp"]}
-                )
-
-              Task.start(fn -> MessageRouter.route(inbound) end)
-            end
-          end
-        end)
-      end)
+    entries
+    |> Enum.flat_map(fn entry -> entry["changes"] || [] end)
+    |> Enum.flat_map(fn change ->
+      value = change["value"] || %{}
+      messages = value["messages"] || []
+      Enum.map(messages, fn msg -> {msg, value} end)
     end)
+    |> Enum.each(fn {msg, value} -> process_message(msg, value) end)
   end
 
   defp process_webhook(_params, _state), do: :ok
+
+  defp process_message(%{"type" => "text"} = msg, value) do
+    text = get_in(msg, ["text", "body"])
+    from = msg["from"]
+
+    if text && from do
+      contact = Enum.find(value["contacts"] || [], fn c -> c["wa_id"] == from end)
+      sender_name = if contact, do: get_in(contact, ["profile", "name"]), else: nil
+
+      inbound =
+        Channel.build_inbound(
+          text,
+          from,
+          :whatsapp,
+          sender_name: sender_name,
+          channel_id: from,
+          reply_to: from,
+          metadata: %{message_id: msg["id"], timestamp: msg["timestamp"]}
+        )
+
+      Task.start(fn -> MessageRouter.route(inbound) end)
+    end
+  end
+
+  defp process_message(_msg, _value), do: :ok
 
   defp send_whatsapp_message(%{token: token, phone_number_id: phone_id}, to, text) do
     url = "https://graph.facebook.com/v21.0/#{phone_id}/messages"

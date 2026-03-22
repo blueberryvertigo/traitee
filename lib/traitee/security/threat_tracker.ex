@@ -118,7 +118,7 @@ defmodule Traitee.Security.ThreatTracker do
     level = threat_level(session_id)
     score = threat_score(session_id) |> Float.round(1)
     count = event_count(session_id)
-    cats = categories_seen(session_id) |> Enum.map(&Atom.to_string/1) |> Enum.join(", ")
+    cats = categories_seen(session_id) |> Enum.map_join(", ", &Atom.to_string/1)
 
     "threat_level=#{level} score=#{score} events=#{count} categories=[#{cats}]"
   end

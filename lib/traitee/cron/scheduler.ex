@@ -123,25 +123,23 @@ defmodule Traitee.Cron.Scheduler do
   end
 
   defp execute_job(job) do
-    try do
-      message = job.payload["message"] || inspect(job.payload)
-      channel = if job.channel, do: String.to_existing_atom(job.channel), else: :cli
-      target = job.target || "cron:#{job.name}"
+    message = job.payload["message"] || inspect(job.payload)
+    channel = if job.channel, do: String.to_existing_atom(job.channel), else: :cli
+    target = job.target || "cron:#{job.name}"
 
-      case Traitee.Session.ensure_started(target, channel) do
-        {:ok, pid} ->
-          Traitee.Session.Server.send_message(pid, message, channel)
-          Logger.info("Cron job #{job.name} executed")
+    case Traitee.Session.ensure_started(target, channel) do
+      {:ok, pid} ->
+        Traitee.Session.Server.send_message(pid, message, channel)
+        Logger.info("Cron job #{job.name} executed")
 
-        {:error, reason} ->
-          Logger.error("Cron job #{job.name} failed to start session: #{inspect(reason)}")
-          mark_error(job, inspect(reason))
-      end
-    rescue
-      e ->
-        Logger.error("Cron job #{job.name} failed: #{Exception.message(e)}")
-        mark_error(job, Exception.message(e))
+      {:error, reason} ->
+        Logger.error("Cron job #{job.name} failed to start session: #{inspect(reason)}")
+        mark_error(job, inspect(reason))
     end
+  rescue
+    e ->
+      Logger.error("Cron job #{job.name} failed: #{Exception.message(e)}")
+      mark_error(job, Exception.message(e))
   end
 
   defp mark_error(job, message) do

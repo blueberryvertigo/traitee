@@ -50,14 +50,14 @@ defmodule Traitee.Config.ValidatorTest do
     end
 
     test "rejects invalid port" do
-      config = %{gateway: %{port: 99999}}
+      config = %{gateway: %{port: 99_999}}
       assert {:error, errors} = Validator.validate(config)
       assert Enum.any?(errors, &String.contains?(&1, "port"))
     end
 
     test "accepts valid port range" do
       assert {:ok, _} = Validator.validate(%{gateway: %{port: 1}})
-      assert {:ok, _} = Validator.validate(%{gateway: %{port: 65535}})
+      assert {:ok, _} = Validator.validate(%{gateway: %{port: 65_535}})
     end
 
     test "rejects invalid tool enabled value" do

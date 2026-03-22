@@ -214,10 +214,8 @@ defmodule Traitee.Memory.Vector do
   defp decode_embedding(nil), do: {:error, nil}
 
   defp decode_embedding(binary) when is_binary(binary) do
-    try do
-      {:ok, :erlang.binary_to_term(binary)}
-    rescue
-      _ -> {:error, :invalid_embedding}
-    end
+    {:ok, :erlang.binary_to_term(binary)}
+  rescue
+    _ -> {:error, :invalid_embedding}
   end
 end

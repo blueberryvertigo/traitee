@@ -8,8 +8,8 @@ defmodule Traitee.Context.Continuity do
   - Automatic session recovery on restart
   """
 
-  alias Traitee.Memory.{LTM, MTM, Vector, Schema}
   alias Traitee.LLM.Router
+  alias Traitee.Memory.{LTM, MTM, Schema, Vector}
 
   @doc """
   Searches across all memory tiers for information matching a query.
@@ -43,10 +43,9 @@ defmodule Traitee.Context.Continuity do
         entity_text =
           results.entities
           |> Enum.take(3)
-          |> Enum.map(fn e ->
+          |> Enum.map_join("\n", fn e ->
             "#{e.name} (#{e.entity_type}): #{e.description || "no description"}"
           end)
-          |> Enum.join("\n")
 
         parts ++ ["Entities:\n#{entity_text}"]
       else
@@ -58,8 +57,7 @@ defmodule Traitee.Context.Continuity do
         fact_text =
           results.facts
           |> Enum.take(5)
-          |> Enum.map(fn f -> "- #{f.content}" end)
-          |> Enum.join("\n")
+          |> Enum.map_join("\n", fn f -> "- #{f.content}" end)
 
         parts ++ ["Facts:\n#{fact_text}"]
       else
@@ -71,8 +69,7 @@ defmodule Traitee.Context.Continuity do
         summary_text =
           results.summaries
           |> Enum.take(3)
-          |> Enum.map(fn s -> s.content end)
-          |> Enum.join("\n---\n")
+          |> Enum.map_join("\n---\n", fn s -> s.content end)
 
         parts ++ ["Past conversations:\n#{summary_text}"]
       else
@@ -93,8 +90,7 @@ defmodule Traitee.Context.Continuity do
       recent_text =
         recent_messages
         |> Enum.take(-5)
-        |> Enum.map(fn msg -> msg[:content] || msg.content || "" end)
-        |> Enum.join(" ")
+        |> Enum.map_join(" ", fn msg -> msg[:content] || msg.content || "" end)
 
       current_words = extract_keywords(current_message)
       recent_words = extract_keywords(recent_text)

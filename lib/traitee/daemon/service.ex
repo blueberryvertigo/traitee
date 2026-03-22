@@ -1,12 +1,14 @@
 defmodule Traitee.Daemon.Service do
   @moduledoc "Cross-platform daemon management for running Traitee as a background service."
 
+  alias Traitee.Daemon.Windows
+
   require Logger
 
   @spec install(keyword()) :: :ok | {:error, term()}
   def install(opts \\ []) do
     case platform() do
-      :windows -> Traitee.Daemon.Windows.install(opts)
+      :windows -> Windows.install(opts)
       :linux -> install_systemd(opts)
       :macos -> install_launchd(opts)
     end
@@ -15,7 +17,7 @@ defmodule Traitee.Daemon.Service do
   @spec uninstall() :: :ok | {:error, term()}
   def uninstall do
     case platform() do
-      :windows -> Traitee.Daemon.Windows.uninstall()
+      :windows -> Windows.uninstall()
       :linux -> uninstall_systemd()
       :macos -> uninstall_launchd()
     end
@@ -24,7 +26,7 @@ defmodule Traitee.Daemon.Service do
   @spec start() :: :ok | {:error, term()}
   def start do
     case platform() do
-      :windows -> Traitee.Daemon.Windows.start()
+      :windows -> Windows.start()
       :linux -> systemctl("start")
       :macos -> launchctl(["load", launchd_plist_path()])
     end
@@ -33,7 +35,7 @@ defmodule Traitee.Daemon.Service do
   @spec stop() :: :ok | {:error, term()}
   def stop do
     case platform() do
-      :windows -> Traitee.Daemon.Windows.stop()
+      :windows -> Windows.stop()
       :linux -> systemctl("stop")
       :macos -> launchctl(["unload", launchd_plist_path()])
     end
@@ -42,7 +44,7 @@ defmodule Traitee.Daemon.Service do
   @spec status() :: :running | :stopped | :not_installed
   def status do
     case platform() do
-      :windows -> Traitee.Daemon.Windows.status()
+      :windows -> Windows.status()
       :linux -> systemd_status()
       :macos -> launchd_status()
     end

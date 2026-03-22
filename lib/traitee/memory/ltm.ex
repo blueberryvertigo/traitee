@@ -8,8 +8,8 @@ defmodule Traitee.Memory.LTM do
   """
 
   import Ecto.Query
+  alias Traitee.Memory.Schema.{Entity, Fact, Relation}
   alias Traitee.Repo
-  alias Traitee.Memory.Schema.{Entity, Relation, Fact}
 
   # -- Entities --
 

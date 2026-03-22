@@ -210,37 +210,44 @@ defmodule Traitee.LLM.Anthropic do
 
     cond do
       role == "tool" ->
-        tool_call_id = msg[:tool_call_id] || msg["tool_call_id"]
-
-        %{
-          role: "user",
-          content: [
-            %{type: "tool_result", tool_use_id: tool_call_id, content: to_string(content)}
-          ]
-        }
+        format_tool_result(msg, content)
 
       role == "assistant" && is_list(tool_calls) && tool_calls != [] ->
-        blocks =
-          if content && content != "", do: [%{type: "text", text: content}], else: []
-
-        tool_blocks =
-          Enum.map(tool_calls, fn call ->
-            func = call["function"] || call[:function] || %{}
-            input = parse_tool_input(func["arguments"] || func[:arguments])
-
-            %{
-              type: "tool_use",
-              id: call["id"] || call[:id],
-              name: func["name"] || func[:name],
-              input: input
-            }
-          end)
-
-        %{role: "assistant", content: blocks ++ tool_blocks}
+        format_assistant_with_tools(content, tool_calls)
 
       true ->
         %{role: role, content: content}
     end
+  end
+
+  defp format_tool_result(msg, content) do
+    tool_call_id = msg[:tool_call_id] || msg["tool_call_id"]
+
+    %{
+      role: "user",
+      content: [
+        %{type: "tool_result", tool_use_id: tool_call_id, content: to_string(content)}
+      ]
+    }
+  end
+
+  defp format_assistant_with_tools(content, tool_calls) do
+    blocks = if content && content != "", do: [%{type: "text", text: content}], else: []
+
+    tool_blocks =
+      Enum.map(tool_calls, fn call ->
+        func = call["function"] || call[:function] || %{}
+        input = parse_tool_input(func["arguments"] || func[:arguments])
+
+        %{
+          type: "tool_use",
+          id: call["id"] || call[:id],
+          name: func["name"] || func[:name],
+          input: input
+        }
+      end)
+
+    %{role: "assistant", content: blocks ++ tool_blocks}
   end
 
   defp parse_tool_input(args) when is_binary(args) do

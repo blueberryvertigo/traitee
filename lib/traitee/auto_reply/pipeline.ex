@@ -1,7 +1,8 @@
 defmodule Traitee.AutoReply.Pipeline do
   @moduledoc "Message processing pipeline: debounce, commands, group activation, skill triggering."
 
-  alias Traitee.AutoReply.{Debouncer, CommandRegistry}
+  alias Traitee.AutoReply.{CommandRegistry, Debouncer}
+  alias Traitee.Skills.Loader
 
   require Logger
 
@@ -76,9 +77,9 @@ defmodule Traitee.AutoReply.Pipeline do
   end
 
   defp match_skill(text) do
-    case Traitee.Skills.Loader.match_skills(text) do
+    case Loader.match_skills(text) do
       [best | _] ->
-        case Traitee.Skills.Loader.load_skill(best.name) do
+        case Loader.load_skill(best.name) do
           {:ok, content} -> content
           _ -> nil
         end

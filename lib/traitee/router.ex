@@ -5,12 +5,13 @@ defmodule Traitee.Router do
   and dispatches them to the appropriate session GenServer.
   """
 
-  alias Traitee.Session
-  alias Traitee.Session.Server, as: SessionServer
-  alias Traitee.Routing.AgentRouter
   alias Traitee.AutoReply.CommandRegistry
+  alias Traitee.Channels.Typing
+  alias Traitee.Routing.AgentRouter
   alias Traitee.Security.Allowlist
   alias Traitee.Security.Pairing
+  alias Traitee.Session
+  alias Traitee.Session.Server, as: SessionServer
 
   require Logger
 
@@ -19,7 +20,7 @@ defmodule Traitee.Router do
 
     with :ok <- check_security(inbound),
          :pass <- check_auto_reply(inbound) do
-      if is_chat_command?(text) do
+      if chat_command?(text) do
         handle_command(text, inbound)
       else
         route_to_agent(inbound)
@@ -116,7 +117,7 @@ defmodule Traitee.Router do
     target = inbound[:reply_to] || inbound[:channel_id] || inbound.sender_id
 
     try do
-      ref = Traitee.Channels.Typing.start(inbound.channel_type, to_string(target))
+      ref = Typing.start(inbound.channel_type, to_string(target))
       Process.put({__MODULE__, :typing_ref}, ref)
     rescue
       _ -> :ok
@@ -129,7 +130,7 @@ defmodule Traitee.Router do
         :ok
 
       ref ->
-        Traitee.Channels.Typing.stop(ref)
+        Typing.stop(ref)
         Process.delete({__MODULE__, :typing_ref})
     end
   end
@@ -142,7 +143,7 @@ defmodule Traitee.Router do
 
   # -- Commands --
 
-  defp is_chat_command?(text) do
+  defp chat_command?(text) do
     String.starts_with?(text, "/")
   end
 

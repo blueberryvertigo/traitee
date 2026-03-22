@@ -9,6 +9,13 @@ defmodule Mix.Tasks.Traitee.Memory do
   """
   use Mix.Task
 
+  alias Traitee.Context.Continuity
+  alias Traitee.Memory.LTM
+  alias Traitee.Memory.Schema.Message
+  alias Traitee.Memory.Schema.Summary
+  alias Traitee.Memory.Vector
+  alias Traitee.Repo
+
   @shortdoc "Memory management commands"
 
   @impl true
@@ -25,11 +32,11 @@ defmodule Mix.Tasks.Traitee.Memory do
   end
 
   defp show_stats do
-    ltm = Traitee.Memory.LTM.stats()
-    vectors = Traitee.Memory.Vector.count()
+    ltm = LTM.stats()
+    vectors = Vector.count()
 
-    message_count = Traitee.Repo.aggregate(Traitee.Memory.Schema.Message, :count, :id)
-    summary_count = Traitee.Repo.aggregate(Traitee.Memory.Schema.Summary, :count, :id)
+    message_count = Repo.aggregate(Message, :count, :id)
+    summary_count = Repo.aggregate(Summary, :count, :id)
 
     IO.puts("""
 
@@ -52,7 +59,7 @@ defmodule Mix.Tasks.Traitee.Memory do
 
     IO.puts("\nSearching for: \"#{query}\"\n")
 
-    results = Traitee.Context.Continuity.recall(query)
+    results = Continuity.recall(query)
 
     if results.entities != [] do
       IO.puts("Entities:")
@@ -89,7 +96,7 @@ defmodule Mix.Tasks.Traitee.Memory do
   end
 
   defp list_entities do
-    entities = Traitee.Memory.LTM.top_entities(50)
+    entities = LTM.top_entities(50)
 
     if entities == [] do
       IO.puts("\nNo entities in memory yet.")
@@ -105,8 +112,8 @@ defmodule Mix.Tasks.Traitee.Memory do
 
   defp reindex do
     IO.write("Rebuilding vector index... ")
-    Traitee.Memory.Vector.reindex()
-    count = Traitee.Memory.Vector.count()
+    Vector.reindex()
+    count = Vector.count()
     IO.puts("done. #{count} vectors indexed.")
   end
 

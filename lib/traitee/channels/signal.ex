@@ -123,22 +123,20 @@ defmodule Traitee.Channels.Signal do
   # -- Private --
 
   defp start_daemon(cli_path, phone) do
-    try do
-      port =
-        Port.open(
-          {:spawn_executable, cli_path},
-          [
-            :binary,
-            :exit_status,
-            :use_stdio,
-            args: ["--output=json", "daemon", "--account", phone]
-          ]
-        )
+    port =
+      Port.open(
+        {:spawn_executable, cli_path},
+        [
+          :binary,
+          :exit_status,
+          :use_stdio,
+          args: ["--output=json", "daemon", "--account", phone]
+        ]
+      )
 
-      {:ok, port}
-    rescue
-      e -> {:error, e}
-    end
+    {:ok, port}
+  rescue
+    e -> {:error, e}
   end
 
   defp extract_json_lines(buffer) do

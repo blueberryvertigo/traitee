@@ -4,7 +4,7 @@ defmodule Traitee.Hooks.Builtin do
   require Logger
 
   alias Traitee.Hooks.Engine
-  alias Traitee.Security.{Sanitizer, ThreatTracker, OutputGuard, Canary, Cognitive, Judge}
+  alias Traitee.Security.{Canary, Cognitive, Judge, OutputGuard, Sanitizer, ThreatTracker}
 
   @spec register_all() :: :ok
   def register_all do

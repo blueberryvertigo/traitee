@@ -75,7 +75,7 @@ defmodule Traitee.Memory.VectorTest do
 
       results = Vector.search(emb1, 100)
       my_results = Enum.filter(results, fn {_, id, _} -> id in [id1, id2] end)
-      assert length(my_results) >= 1
+      assert my_results != []
       [{_, _, score1} | _] = my_results
       assert score1 > 0
     end

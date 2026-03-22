@@ -49,14 +49,12 @@ defmodule Traitee.Tools.Sessions do
       {:ok, "No active sessions."}
     else
       formatted =
-        sessions
-        |> Enum.map(fn s ->
+        Enum.map_join(sessions, "\n", fn s ->
           id = s[:session_id] || "unknown"
           channel = s[:channel] || "unknown"
           count = s[:message_count] || 0
           "#{id} (#{channel}, #{count} messages)"
         end)
-        |> Enum.join("\n")
 
       {:ok, formatted}
     end
@@ -68,13 +66,11 @@ defmodule Traitee.Tools.Sessions do
     case InterSession.get_history(sid, limit) do
       {:ok, messages} ->
         formatted =
-          messages
-          |> Enum.map(fn msg ->
+          Enum.map_join(messages, "\n", fn msg ->
             role = msg[:role] || msg["role"] || "unknown"
             content = msg[:content] || msg["content"] || ""
             "[#{role}] #{content}"
           end)
-          |> Enum.join("\n")
 
         {:ok, formatted}
 

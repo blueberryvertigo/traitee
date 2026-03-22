@@ -1,7 +1,7 @@
 defmodule Traitee.Memory.SchemaTest do
   use ExUnit.Case, async: true
 
-  alias Traitee.Memory.Schema.{Message, Summary, Entity, Relation, Fact, Session}
+  alias Traitee.Memory.Schema.{Entity, Fact, Message, Relation, Session, Summary}
 
   describe "Message.changeset/2" do
     test "valid changeset" do

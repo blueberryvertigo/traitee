@@ -10,8 +10,8 @@ defmodule Traitee.Memory.CompactionPipelineTest do
 
   @moduletag :integration
 
-  alias Traitee.Memory.{Compactor, MTM, LTM, STM, Vector}
   alias Traitee.LLM.Types.CompletionResponse
+  alias Traitee.Memory.{Compactor, LTM, MTM, STM, Vector}
 
   import Traitee.TestHelpers
   import Mox
