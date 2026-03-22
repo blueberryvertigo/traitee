@@ -148,7 +148,9 @@ defmodule Traitee.LLM.Ollama do
   end
 
   defp base_url do
-    System.get_env("OLLAMA_HOST") || @default_base_url
+    System.get_env("OLLAMA_HOST") ||
+      Traitee.Config.get([:agent, :ollama_host]) ||
+      @default_base_url
   end
 
   defp embedding_model do

@@ -566,7 +566,10 @@ defmodule Traitee.Onboard.Wizard do
   end
 
   defp configure_sandbox_mode(state) do
-    puts("  #{ANSI.bright()}Sandbox mode#{ANSI.reset()} sets the default access policy for the AI's tools.")
+    puts(
+      "  #{ANSI.bright()}Sandbox mode#{ANSI.reset()} sets the default access policy for the AI's tools."
+    )
+
     puts("  With sandbox ON, the AI can only access paths you explicitly allow.")
     puts("  With sandbox OFF, reads are allowed everywhere (writes still blocked).\n")
 
@@ -574,7 +577,10 @@ defmodule Traitee.Onboard.Wizard do
 
     policy =
       if sandbox do
-        puts("\n  #{ANSI.bright()}Default policy#{ANSI.reset()} — what happens when a path doesn't match any rule:")
+        puts(
+          "\n  #{ANSI.bright()}Default policy#{ANSI.reset()} — what happens when a path doesn't match any rule:"
+        )
+
         puts("    1) deny      — block all access unless explicitly allowed (most secure)")
         puts("    2) read_only — allow reads, block writes unless explicitly allowed")
         choice = prompt("    Policy [1]") |> normalize("1")
@@ -583,7 +589,9 @@ defmodule Traitee.Onboard.Wizard do
         "read_only"
       end
 
-    puts("#{ANSI.green()}  ✓ Sandbox: #{if sandbox, do: "ON", else: "OFF"}, default policy: #{policy}#{ANSI.reset()}\n")
+    puts(
+      "#{ANSI.green()}  ✓ Sandbox: #{if sandbox, do: "ON", else: "OFF"}, default policy: #{policy}#{ANSI.reset()}\n"
+    )
 
     fs = %{state.filesystem | sandbox_mode: sandbox, default_policy: policy}
     %{state | filesystem: fs}
@@ -647,7 +655,10 @@ defmodule Traitee.Onboard.Wizard do
       puts("  - Automatic cleanup (container deleted after each command)")
       puts("")
       puts("  #{ANSI.faint()}Requires Docker to be installed and running.#{ANSI.reset()}")
-      puts("  #{ANSI.faint()}Falls back to host execution if Docker is unavailable.#{ANSI.reset()}\n")
+
+      puts(
+        "  #{ANSI.faint()}Falls back to host execution if Docker is unavailable.#{ANSI.reset()}\n"
+      )
 
       docker = confirm?("  Enable Docker isolation?")
 
@@ -678,7 +689,13 @@ defmodule Traitee.Onboard.Wizard do
       net_choice = prompt("    Network [1]") |> normalize("1")
       network = if net_choice == "2", do: "bridge", else: "none"
 
-      fs = %{state.filesystem | docker_image: image, docker_memory: memory, docker_network: network}
+      fs = %{
+        state.filesystem
+        | docker_image: image,
+          docker_memory: memory,
+          docker_network: network
+      }
+
       %{state | filesystem: fs}
     else
       state
@@ -698,7 +715,10 @@ defmodule Traitee.Onboard.Wizard do
   end
 
   defp configure_audit(state) do
-    puts("  #{ANSI.bright()}Security audit trail#{ANSI.reset()} — logs every filesystem access decision.")
+    puts(
+      "  #{ANSI.bright()}Security audit trail#{ANSI.reset()} — logs every filesystem access decision."
+    )
+
     puts("  Enables `mix traitee.security` to review access patterns and denials.\n")
 
     audit = confirm?("  Enable audit trail? (recommended)")
@@ -752,9 +772,10 @@ defmodule Traitee.Onboard.Wizard do
     secret =
       if confirm?("Generate a SECRET_KEY_BASE for Phoenix? (required for production)") do
         key = :crypto.strong_rand_bytes(64) |> Base.encode64(padding: false) |> binary_part(0, 64)
-        puts("#{ANSI.green()}✓ Generated SECRET_KEY_BASE#{ANSI.reset()}")
+        CredentialStore.store(:phoenix, "secret_key_base", key)
+        puts("#{ANSI.green()}✓ Generated and saved SECRET_KEY_BASE#{ANSI.reset()}")
         puts("  #{ANSI.faint()}#{key}#{ANSI.reset()}")
-        puts("  Set this as the SECRET_KEY_BASE environment variable in production.\n")
+        puts("  Also stored in credential store. Set SECRET_KEY_BASE env var in production.\n")
         key
       else
         nil
@@ -910,6 +931,11 @@ defmodule Traitee.Onboard.Wizard do
           ~s(bot_name = "#{escape_toml(state.bot_name)}"),
           ~s(system_prompt = "#{escape_toml(state.system_prompt)}")
         ]
+
+    lines =
+      if state.ollama_host,
+        do: lines ++ [~s(ollama_host = "#{state.ollama_host}")],
+        else: lines
 
     Enum.join(lines, "\n")
   end

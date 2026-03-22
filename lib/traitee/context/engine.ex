@@ -106,7 +106,9 @@ defmodule Traitee.Context.Engine do
 
     session_id = opts[:session_id]
 
-    if session_id && Cognitive.enabled?() do
+    canary_enabled = Traitee.Config.get([:security, :cognitive, :canary_enabled]) != false
+
+    if session_id && Cognitive.enabled?() && canary_enabled do
       canary_section = Canary.system_prompt_section(session_id)
       base <> "\n\n" <> canary_section
     else

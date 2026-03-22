@@ -34,9 +34,14 @@ defmodule Traitee.Security.Docker do
   def run(command, opts \\ []) do
     if enabled?() do
       case check_docker_available() do
-        :ok -> execute_in_container(command, opts)
+        :ok ->
+          execute_in_container(command, opts)
+
         {:error, reason} ->
-          Logger.warning("[Docker] Docker unavailable: #{reason} — falling back to host execution")
+          Logger.warning(
+            "[Docker] Docker unavailable: #{reason} — falling back to host execution"
+          )
+
           {:error, {:docker_unavailable, reason}}
       end
     else
@@ -113,19 +118,32 @@ defmodule Traitee.Security.Docker do
       [
         "run",
         "--rm",
-        "--name", container_name,
+        "--name",
+        container_name,
         "--read-only",
-        "--network", policy.docker_network,
-        "--memory", policy.docker_memory,
-        "--cpus", policy.docker_cpus,
-        "--pids-limit", "100",
-        "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m",
-        "--security-opt", "no-new-privileges",
-        "--workdir", working_dir
-      ] ++ mounts ++ env_flags ++ [
-        policy.docker_image,
-        "/bin/sh", "-c", command
-      ]
+        "--network",
+        policy.docker_network,
+        "--memory",
+        policy.docker_memory,
+        "--cpus",
+        policy.docker_cpus,
+        "--pids-limit",
+        "100",
+        "--tmpfs",
+        "/tmp:rw,noexec,nosuid,size=64m",
+        "--security-opt",
+        "no-new-privileges",
+        "--workdir",
+        working_dir
+      ] ++
+        mounts ++
+        env_flags ++
+        [
+          policy.docker_image,
+          "/bin/sh",
+          "-c",
+          command
+        ]
 
     Traitee.Security.Audit.record(:docker_exec, %{
       command: truncate(command),

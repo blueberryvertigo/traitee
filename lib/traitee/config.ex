@@ -15,8 +15,10 @@ defmodule Traitee.Config do
     agent: %{
       model: "anthropic/claude-opus-4.6",
       fallback_model: "openai/gpt-5.4",
+      bot_name: "Traitee",
       system_prompt:
-        "You are Traitee, a personal AI assistant platform. Be concise, helpful, and personable."
+        "You are Traitee, a personal AI assistant platform. Be concise, helpful, and personable.",
+      ollama_host: nil
     },
     memory: %{
       stm_capacity: 50,
@@ -207,6 +209,7 @@ defmodule Traitee.Config do
     discord_token = resolve_credential(:discord, :discord_bot_token, "bot_token")
     telegram_token = resolve_credential(:telegram, :telegram_bot_token, "bot_token")
     whatsapp_token = resolve_credential(:whatsapp, :whatsapp_token, "bot_token")
+    web_search_key = resolve_credential(:web_search, :web_search_api_key, "api_key")
 
     %{}
     |> maybe_put([:agent, :model], System.get_env("TRAITEE_MODEL"))
@@ -215,6 +218,7 @@ defmodule Traitee.Config do
     |> maybe_put([:channels, :telegram, :token], telegram_token)
     |> maybe_put([:channels, :telegram, :enabled], !is_nil(telegram_token))
     |> maybe_put([:channels, :whatsapp, :token], whatsapp_token)
+    |> maybe_put([:tools, :web_search, :api_key], web_search_key)
   end
 
   defp resolve_credential(provider, app_env_key, credential_key) do

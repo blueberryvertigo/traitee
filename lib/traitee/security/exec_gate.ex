@@ -85,7 +85,8 @@ defmodule Traitee.Security.ExecGate do
     - `:operation` — the operation type (e.g., :write, :exec)
     - `:session_id` — session ID for audit trail
   """
-  @spec evaluate(String.t(), keyword()) :: {:approve, String.t()} | {:warn, String.t()} | {:deny, String.t()}
+  @spec evaluate(String.t(), keyword()) ::
+          {:approve, String.t()} | {:warn, String.t()} | {:deny, String.t()}
   def evaluate(command_or_path, opts \\ []) do
     if enabled?() do
       tool = Keyword.get(opts, :tool, "unknown")
@@ -129,9 +130,18 @@ defmodule Traitee.Security.ExecGate do
       expanded = Path.expand(path)
 
       system_dirs = [
-        "/usr", "/bin", "/sbin", "/etc", "/var", "/opt",
-        "/boot", "/lib", "/lib64",
-        "C:/Windows", "C:/Program Files", "C:/Program Files (x86)"
+        "/usr",
+        "/bin",
+        "/sbin",
+        "/etc",
+        "/var",
+        "/opt",
+        "/boot",
+        "/lib",
+        "/lib64",
+        "C:/Windows",
+        "C:/Program Files",
+        "C:/Program Files (x86)"
       ]
 
       normalized = String.replace(expanded, "\\", "/") |> String.downcase()

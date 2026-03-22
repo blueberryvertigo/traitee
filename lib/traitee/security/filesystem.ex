@@ -94,11 +94,32 @@ defmodule Traitee.Security.Filesystem do
   ]
 
   @safe_env_allowlist [
-    "PATH", "HOME", "USER", "SHELL", "LANG", "LC_ALL", "TERM", "TZ",
-    "TMPDIR", "TEMP", "TMP", "HOSTNAME", "PWD", "MIX_ENV", "PORT",
-    "PHX_HOST", "XDG_DATA_HOME", "XDG_CONFIG_HOME",
-    "SYSTEMROOT", "COMSPEC", "PATHEXT", "PROGRAMFILES", "WINDIR",
-    "APPDATA", "LOCALAPPDATA", "USERPROFILE"
+    "PATH",
+    "HOME",
+    "USER",
+    "SHELL",
+    "LANG",
+    "LC_ALL",
+    "TERM",
+    "TZ",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    "HOSTNAME",
+    "PWD",
+    "MIX_ENV",
+    "PORT",
+    "PHX_HOST",
+    "XDG_DATA_HOME",
+    "XDG_CONFIG_HOME",
+    "SYSTEMROOT",
+    "COMSPEC",
+    "PATHEXT",
+    "PROGRAMFILES",
+    "WINDIR",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "USERPROFILE"
   ]
 
   # -- Initialization --
@@ -224,7 +245,9 @@ defmodule Traitee.Security.Filesystem do
   @spec current_policy() :: map()
   def current_policy do
     case :ets.whereis(@table) do
-      :undefined -> load_config()
+      :undefined ->
+        load_config()
+
       _ ->
         case :ets.lookup(@table, :policy) do
           [{:policy, policy}] -> policy
@@ -291,7 +314,9 @@ defmodule Traitee.Security.Filesystem do
     normalized = normalize_for_match(resolved)
 
     case Enum.find(@hardcoded_deny_patterns, &glob_match?(normalized, &1)) do
-      nil -> :ok
+      nil ->
+        :ok
+
       pattern ->
         Logger.warning("[Filesystem] Hardcoded deny: #{resolved} matched #{pattern}")
         {:error, "Access denied: path matches hardcoded security policy (#{pattern})"}
@@ -302,7 +327,9 @@ defmodule Traitee.Security.Filesystem do
     normalized = normalize_for_match(resolved)
 
     case Enum.find(policy.deny_rules, fn rule -> glob_match?(normalized, rule.pattern) end) do
-      nil -> :ok
+      nil ->
+        :ok
+
       rule ->
         Logger.warning("[Filesystem] Configured deny: #{resolved} matched #{rule.pattern}")
         {:error, "Access denied: path matches deny rule \"#{rule.pattern}\""}
@@ -376,7 +403,9 @@ defmodule Traitee.Security.Filesystem do
 
   defp check_hardcoded_command(command) do
     case Enum.find(@hardcoded_deny_commands, &Regex.match?(&1, command)) do
-      nil -> :ok
+      nil ->
+        :ok
+
       pattern ->
         Logger.warning("[Filesystem] Blocked dangerous command: #{truncate_command(command)}")
         {:error, "Command blocked: matches security pattern #{inspect(Regex.source(pattern))}"}
@@ -391,7 +420,9 @@ defmodule Traitee.Security.Filesystem do
              Regex.match?(pat, command)
            end
          end) do
-      nil -> :ok
+      nil ->
+        :ok
+
       pat ->
         label = if is_binary(pat), do: pat, else: Regex.source(pat)
         {:error, "Command blocked by configured deny pattern: #{label}"}
@@ -502,7 +533,10 @@ defmodule Traitee.Security.Filesystem do
     %{
       sandbox_mode: sandbox_mode,
       default_policy: parse_default_policy(fs_config[:default_policy], sandbox_mode),
-      allow_rules: parse_path_rules(fs_config[:allow] || fs_config[:allow_rules] || legacy_allow_paths(tools_config)),
+      allow_rules:
+        parse_path_rules(
+          fs_config[:allow] || fs_config[:allow_rules] || legacy_allow_paths(tools_config)
+        ),
       deny_rules: parse_path_rules(fs_config[:deny] || fs_config[:deny_rules] || []),
       command_deny_patterns: parse_command_patterns(fs_config[:command_deny] || []),
       working_dir: (tools_config[:bash] || %{})[:working_dir] || fs_config[:working_dir]
@@ -624,7 +658,9 @@ defmodule Traitee.Security.Filesystem do
 
   defp audit_enabled? do
     case :ets.whereis(@table) do
-      :undefined -> false
+      :undefined ->
+        false
+
       _ ->
         case :ets.lookup(@table, :policy) do
           [{:policy, %{audit_enabled: true}}] -> true
@@ -664,10 +700,16 @@ defmodule Traitee.Security.Filesystem do
       policy.allow_rules != [] or policy.default_policy == :deny,
       "no allow rules and default policy is not deny — broad filesystem access possible"
     )
-    |> maybe_gap(policy.exec_gate_enabled, "exec approval gates disabled — all commands auto-approved")
+    |> maybe_gap(
+      policy.exec_gate_enabled,
+      "exec approval gates disabled — all commands auto-approved"
+    )
     |> maybe_gap(policy.docker_enabled, "docker isolation disabled — tools run in host process")
     |> maybe_gap(policy.audit_enabled, "audit logging disabled — no filesystem access trail")
-    |> maybe_gap(policy.deny_rules != [], "no custom deny rules — relying only on hardcoded patterns")
+    |> maybe_gap(
+      policy.deny_rules != [],
+      "no custom deny rules — relying only on hardcoded patterns"
+    )
     |> Enum.reverse()
   end
 

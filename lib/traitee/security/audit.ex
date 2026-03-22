@@ -211,11 +211,13 @@ defmodule Traitee.Security.Audit do
   end
 
   defp maybe_filter(events, _key, nil), do: events
+
   defp maybe_filter(events, key, value) do
     Enum.filter(events, &(Map.get(&1, key) == value))
   end
 
   defp maybe_filter_path(events, nil), do: events
+
   defp maybe_filter_path(events, substring) do
     Enum.filter(events, fn event ->
       path = get_in(event, [:details, :path]) || get_in(event, [:details, :command]) || ""
@@ -224,6 +226,7 @@ defmodule Traitee.Security.Audit do
   end
 
   defp maybe_filter_since(events, nil), do: events
+
   defp maybe_filter_since(events, since) do
     Enum.filter(events, fn event ->
       DateTime.compare(event.timestamp, since) in [:gt, :eq]
@@ -231,6 +234,7 @@ defmodule Traitee.Security.Audit do
   end
 
   defp denial_rate([]), do: "0%"
+
   defp denial_rate(events) do
     denials = Enum.count(events, &(&1.decision == :deny))
     total = length(events)

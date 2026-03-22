@@ -51,7 +51,8 @@ defmodule Traitee.Tools.File do
     operation = classify_operation(op)
     session_id = args["_session_id"]
 
-    with :ok <- Sandbox.check_path(path, operation: operation, tool: "file", session_id: session_id) do
+    with :ok <-
+           Sandbox.check_path(path, operation: operation, tool: "file", session_id: session_id) do
       case op do
         "read" -> read_file(path)
         "write" -> write_file(path, args["content"] || "")

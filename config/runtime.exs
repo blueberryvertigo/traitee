@@ -1,11 +1,23 @@
 import Config
 
 if config_env() == :prod do
+  cred_path = Path.expand("~/.traitee/credentials/phoenix.json")
+
+  stored_secret =
+    if File.exists?(cred_path) do
+      case File.read(cred_path) do
+        {:ok, json} -> json |> Jason.decode!() |> Map.get("secret_key_base")
+        _ -> nil
+      end
+    end
+
   secret_key_base =
     System.get_env("SECRET_KEY_BASE") ||
+      stored_secret ||
       raise """
       environment variable SECRET_KEY_BASE is missing.
-      Generate one with: mix phx.gen.secret
+      Generate one by running: mix traitee.onboard
+      Or set SECRET_KEY_BASE directly.
       """
 
   host = System.get_env("PHX_HOST") || "localhost"

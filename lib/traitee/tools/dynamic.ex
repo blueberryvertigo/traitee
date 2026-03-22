@@ -27,16 +27,21 @@ defmodule Traitee.Tools.Dynamic do
     command = interpolate(template, args)
     session_id = args["_session_id"]
 
-    with :ok <- Sandbox.check_command(command, tool: "dynamic:#{tool_name}", session_id: session_id) do
+    with :ok <-
+           Sandbox.check_command(command, tool: "dynamic:#{tool_name}", session_id: session_id) do
       env = Sandbox.scrubbed_env()
 
       result =
         if Docker.enabled?() do
           case Docker.run(command, timeout_ms: @default_timeout, env: env, session_id: session_id) do
-            {:ok, r} -> {:ok, r}
+            {:ok, r} ->
+              {:ok, r}
+
             {:error, {:docker_unavailable, _}} ->
               Executor.run(command, timeout_ms: @default_timeout, env: env)
-            other -> other
+
+            other ->
+              other
           end
         else
           Executor.run(command, timeout_ms: @default_timeout, env: env)
@@ -49,10 +54,16 @@ defmodule Traitee.Tools.Dynamic do
   def execute(%{executor: {:script, path}, name: tool_name}, args) do
     session_id = args["_session_id"]
 
-    with :ok <- Sandbox.check_path(path, operation: :exec, tool: "dynamic:#{tool_name}", session_id: session_id) do
+    with :ok <-
+           Sandbox.check_path(path,
+             operation: :exec,
+             tool: "dynamic:#{tool_name}",
+             session_id: session_id
+           ) do
       command = build_script_command(path, args)
 
-      with :ok <- Sandbox.check_command(command, tool: "dynamic:#{tool_name}", session_id: session_id) do
+      with :ok <-
+             Sandbox.check_command(command, tool: "dynamic:#{tool_name}", session_id: session_id) do
         run_with_sandbox(command, session_id)
         |> format_script_result()
       end
@@ -89,9 +100,14 @@ defmodule Traitee.Tools.Dynamic do
 
     if Docker.enabled?() do
       case Docker.run(command, timeout_ms: @default_timeout, env: env, session_id: session_id) do
-        {:ok, r} -> {:ok, r}
-        {:error, {:docker_unavailable, _}} -> Executor.run(command, timeout_ms: @default_timeout, env: env)
-        other -> other
+        {:ok, r} ->
+          {:ok, r}
+
+        {:error, {:docker_unavailable, _}} ->
+          Executor.run(command, timeout_ms: @default_timeout, env: env)
+
+        other ->
+          other
       end
     else
       Executor.run(command, timeout_ms: @default_timeout, env: env)
@@ -99,18 +115,30 @@ defmodule Traitee.Tools.Dynamic do
   end
 
   defp format_tool_result({:ok, %{stdout: output, exit_code: 0}}), do: {:ok, truncate(output)}
-  defp format_tool_result({:ok, %{stdout: output, exit_code: code}}), do: {:ok, "Exit code #{code}:\n#{truncate(output)}"}
-  defp format_tool_result({:error, :timeout}), do: {:error, "Tool timed out after #{@default_timeout}ms"}
+
+  defp format_tool_result({:ok, %{stdout: output, exit_code: code}}),
+    do: {:ok, "Exit code #{code}:\n#{truncate(output)}"}
+
+  defp format_tool_result({:error, :timeout}),
+    do: {:error, "Tool timed out after #{@default_timeout}ms"}
+
   defp format_tool_result({:error, reason}), do: {:error, "Tool failed: #{inspect(reason)}"}
 
   defp format_script_result({:ok, %{stdout: output, exit_code: 0}}), do: {:ok, truncate(output)}
-  defp format_script_result({:ok, %{stdout: output, exit_code: code}}), do: {:ok, "Exit code #{code}:\n#{truncate(output)}"}
-  defp format_script_result({:error, :timeout}), do: {:error, "Script timed out after #{@default_timeout}ms"}
+
+  defp format_script_result({:ok, %{stdout: output, exit_code: code}}),
+    do: {:ok, "Exit code #{code}:\n#{truncate(output)}"}
+
+  defp format_script_result({:error, :timeout}),
+    do: {:error, "Script timed out after #{@default_timeout}ms"}
+
   defp format_script_result({:error, reason}), do: {:error, "Script failed: #{inspect(reason)}"}
 
   defp interpolate(template, args) do
     Enum.reduce(args, template, fn
-      {"_session_id", _}, acc -> acc
+      {"_session_id", _}, acc ->
+        acc
+
       {key, value}, acc ->
         String.replace(acc, "${#{key}}", shell_escape(to_string(value)))
     end)

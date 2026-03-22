@@ -229,7 +229,9 @@ defmodule Traitee.Doctor do
     warnings =
       []
       |> then(fn w -> if posture.sandbox_mode, do: w, else: ["sandbox mode OFF" | w] end)
-      |> then(fn w -> if posture.default_policy == :allow, do: ["default policy is allow-all" | w], else: w end)
+      |> then(fn w ->
+        if posture.default_policy == :allow, do: ["default policy is allow-all" | w], else: w
+      end)
       |> then(fn w ->
         if posture.allow_rules_count == 0 and posture.default_policy != :deny,
           do: ["no allow rules configured" | w],

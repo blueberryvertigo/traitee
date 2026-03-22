@@ -55,10 +55,19 @@ defmodule Traitee.Security.Sandbox do
   @spec blocked_filenames() :: [String.t()]
   def blocked_filenames do
     [
-      ".env", ".env.local", ".env.production", ".env.staging",
-      "secrets.toml", "secrets.yml", "secrets.yaml", "secrets.json",
-      "credentials.json", "service-account.json", "master.key",
-      "shadow", "passwd"
+      ".env",
+      ".env.local",
+      ".env.production",
+      ".env.staging",
+      "secrets.toml",
+      "secrets.yml",
+      "secrets.yaml",
+      "secrets.json",
+      "credentials.json",
+      "service-account.json",
+      "master.key",
+      "shadow",
+      "passwd"
     ]
   end
 

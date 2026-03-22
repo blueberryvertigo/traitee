@@ -56,25 +56,29 @@ Traitee is a **personal AI assistant** — a single-operator, single-host system
 
 ## Security Architecture
 
-Traitee implements an 8-layer security pipeline that processes every message:
+Traitee implements two independent security pipelines: an **8-layer cognitive pipeline** that processes every LLM interaction, and a **4-layer filesystem pipeline** that enforces boundaries on every tool execution. Both are always active.
 
-### Inbound Pipeline
+### Cognitive Security Pipeline
+
+Protects the LLM's reasoning process from manipulation, on both sides of the LLM call.
+
+#### Inbound
 
 | Layer | Module | Purpose |
 |-------|--------|---------|
-| 1. Sanitizer | `Security.Sanitizer` | Regex-based input classification across 8 threat categories; replaces matched patterns with `[filtered]` |
-| 2. Judge | `Security.Judge` | LLM-as-a-judge detection for attacks that bypass regex (multilingual injection, encoding evasion, social engineering). Fails open on timeout |
+| 1. Sanitizer | `Security.Sanitizer` | Regex-based input classification across 8 threat categories (29 patterns); replaces matched patterns with `[filtered]` |
+| 2. Judge | `Security.Judge` | LLM-as-a-judge detection for attacks that bypass regex (multilingual injection, encoding evasion, social engineering). Fails open on timeout (3s) |
 | 3. Threat Tracker | `Security.ThreatTracker` | Per-session ETS-backed threat accumulator with time-decayed scoring. Escalates threat level across `normal → elevated → high → critical` |
 | 4. Cognitive | `Security.Cognitive` | Persistent identity reinforcement — injects reminders scaled to threat level. Pre-tool reminders treat all tool outputs as untrusted |
 
-### Outbound Pipeline
+#### Outbound
 
 | Layer | Module | Purpose |
 |-------|--------|---------|
-| 5. Output Guard | `Security.OutputGuard` | Post-LLM response validator detecting identity drift, prompt leakage, restriction denial, encoded output, and 50+ violation patterns. Critical violations are blocked; others are redacted |
+| 5. Output Guard | `Security.OutputGuard` | Post-LLM response validator with 76 patterns across 14 categories: identity drift, prompt leakage, restriction denial, encoded output, and **filesystem secret leakage** (PEM keys, SSH keys, API keys, database URLs with credentials). Critical violations are blocked; others are redacted |
 | 6. Canary | `Security.Canary` | Per-session cryptographic canary tokens embedded in system prompts. Leakage triggers critical-level blocking |
 
-### Access Control
+#### Access Control
 
 | Layer | Module | Purpose |
 |-------|--------|---------|
@@ -83,14 +87,29 @@ Traitee implements an 8-layer security pipeline that processes every message:
 
 Additionally, `Security.RateLimiter` provides ETS-backed token-bucket rate limiting (default: 30 requests/minute).
 
+### Filesystem Security Pipeline
+
+Protects the host filesystem and prevents secret exfiltration through tool execution. Every tool call passes through this pipeline in order. Layers 1 and 2 are always active and cannot be disabled.
+
+| Layer | Module | Purpose |
+|-------|--------|---------|
+| 1. I/O Guards | `Security.IOGuard` | **Always active, independent of sandbox.** Scans tool arguments for 27 sensitive path patterns (`.ssh`, `.aws`, `.env`, `.pem`, `master.key`, `/etc/shadow`, etc.) and 13 dangerous command patterns (`curl\|sh`, fork bombs, reverse shells, `rm -rf /`, etc.). Scans tool output for 15 secret types and redacts them (PEM keys, SSH keys, API keys, JWTs, passwords, database URLs). Wraps entire tool execution in `try/rescue` — if any security module crashes, the operation is **denied** (fail-closed) rather than crashing the session |
+| 2. Hardcoded Denylists | `Security.Filesystem` | **Always active.** 31 path glob patterns (`.ssh/*`, `.aws/*`, `id_rsa*`, `*.pem`, `master.key`, `/etc/shadow`, etc.) and 19 command regex patterns (`curl\|sh`, `nc -e`, `chmod +s`, `certutil`, etc.) that are blocked unconditionally. Environment variable scrubbing strips `KEY`, `SECRET`, `TOKEN`, `PASSWORD`, `CREDENTIAL`, `AUTH` from child process environments |
+| 3. Sandbox | `Security.Sandbox` | **Configurable.** Per-path access control with `allow` / `deny` rules, glob patterns, and per-rule permissions (`read`, `write`, `exec`). Default policy: `deny`, `read_only`, or `allow`. Working directory jail. `~/.traitee` is always accessible |
+| 4. Exec Gates | `Security.ExecGate` | **Configurable.** Approval gates for risky commands with 10 default rules (`rm`, `chmod`, `curl`, `wget`, `docker`, `sudo`, `npm publish`, `pip install`, `git push`, `powershell`). Actions: `approve`, `warn`, `deny`. System directory write protection (`/usr`, `/etc`, `C:\Windows`, `C:\Program Files`, etc.) |
+
+**Optional: Docker isolation** (`Security.Docker`) — OS-level container isolation with ephemeral containers, `--read-only` filesystem, `--network none`, memory/CPU/PID limits, dynamic bind mounts from allow rules, and host fallback on Docker unavailability.
+
+**Audit trail** (`Security.Audit`) — Structured ETS ring buffer (10K events) recording all security-relevant filesystem operations: path access, command checks, exec gate decisions, Docker executions, I/O guard denials, crash events, and tool denials. Queryable by type, tool, session, and time range. Accessible via `mix traitee.security`.
+
 ## Tool Security
 
-Traitee includes 8 built-in tools. Each can be individually enabled or disabled via config.
+Traitee includes 8 built-in tools. Each can be individually enabled or disabled via config. All tools that touch the filesystem or execute commands pass through the full filesystem security pipeline (IOGuard → Hardcoded Denylists → Sandbox → Exec Gates).
 
 | Tool | Capabilities | Risk Level |
 |------|-------------|------------|
-| `bash` | Execute shell commands (cmd.exe on Windows, /bin/sh on Unix) | **High** — 30s timeout, 10KB output cap, but no sandbox by default |
-| `file` | Read, write, append, list, check existence | **High** — operates on expanded paths without sandboxing; 50KB read cap |
+| `bash` | Execute shell commands (cmd.exe on Windows, /bin/sh on Unix) | **High** — 30s timeout, 100KB output cap. Enforced through Sandbox: commands are checked against hardcoded denylists, exec gates, and configurable policies. Optional Docker container isolation |
+| `file` | Read, write, append, list, check existence | **High** — 50KB read cap. All paths checked against IOGuard patterns, hardcoded denylists, and configurable per-path allow/deny policies with read/write permissions |
 | `browser` | Full Playwright automation: navigate, click, type, screenshot, evaluate JS | **High** — arbitrary JS execution in Chromium; headless by default |
 | `web_search` | SearXNG-based web queries | Low — read-only, 10s timeout |
 | `memory` | Store/recall entities and facts in LTM | Low — scoped to the instance's knowledge graph |
@@ -98,23 +117,41 @@ Traitee includes 8 built-in tools. Each can be individually enabled or disabled 
 | `cron` | Manage scheduled jobs | Medium — jobs can trigger session messages |
 | `channel_send` | Send messages to any configured channel | Medium — cross-channel message delivery |
 
-**Dynamic tools** can be registered at runtime (bash templates, scripts). They are stored in `~/.traitee/dynamic_tools.json` and cannot override built-in tool names.
+**Dynamic tools** can be registered at runtime (bash templates, scripts). They are stored in `~/.traitee/dynamic_tools.json` and cannot override built-in tool names. Dynamic tools are also subject to the full filesystem security pipeline — bash templates pass through Sandbox command checks, and script executors pass through path checks.
 
 **Concurrency limits** are enforced via `Process.Lanes`: tool=3, embed=2, llm=1 concurrent operations.
+
+### Tool Execution Security Chain
+
+Every tool call in the session server passes through this chain:
+
+1. **IOGuard input check** — scans tool arguments for sensitive paths and dangerous commands (independent pattern set)
+2. **Sandbox enforcement** — hardcoded denylists, configurable allow/deny policies, exec gates
+3. **Tool execution** — wrapped in `try/rescue` (fail-closed: crashes become denials, not session termination)
+4. **IOGuard output check** — scans tool results for leaked secrets (PEM keys, API keys, passwords, etc.) and redacts them
+5. **Audit logging** — all security events recorded to the audit trail
+
+If any step fails or crashes, the tool call returns a safe error message and the session continues normally.
 
 ### Tool Hardening Recommendations
 
 - Disable `bash` and `file` tools in config if your use case doesn't require them.
-- Review dynamic tools before deployment — they execute with the same OS privileges as the Traitee process.
+- Enable **sandbox mode** (`security.filesystem.sandbox_mode = true`) with `default_policy = "deny"` and explicit allow rules for trusted directories.
+- Enable **Docker isolation** (`security.filesystem.docker.enabled = true`) for OS-level containment of bash commands.
+- Enable **exec gates** (`security.filesystem.exec_gate.enabled = true`) to get approval checks on risky commands like `rm`, `curl`, `docker`, and `sudo`.
+- Enable **audit trail** (`security.filesystem.audit.enabled = true`) and review with `mix traitee.security --audit`.
+- Review dynamic tools before deployment — they execute with the same OS privileges as the Traitee process, but are still subject to all filesystem security layers.
 - The `browser` tool's `evaluate` action runs arbitrary JavaScript. Disable the browser tool if not needed.
 - Consider running Traitee as a non-root/low-privilege OS user to limit tool blast radius.
+- Run `mix traitee.security --gaps` to identify weaknesses in your filesystem security posture.
 
 ## Session Isolation
 
 - Every conversation is an isolated **GenServer** with its own ETS heap, STM buffer, and crash boundary.
 - One session crash does not affect other sessions (OTP supervision with `restart: :transient`).
-- The full security pipeline (sanitizer → judge → threat tracker → cognitive → output guard) runs independently per session.
+- Both security pipelines (cognitive and filesystem) run independently per session.
 - Threat scores are per-session and time-decayed — one user's threat level does not affect another's.
+- Tool execution is fail-closed: if any security module crashes during a tool call, the tool returns a safe error and the session continues. Security failures never propagate to session termination.
 
 ## Secrets and Credentials
 
@@ -176,8 +213,12 @@ The following are **not** considered vulnerabilities:
 - **Dynamic tool behavior** — Reports that only show a dynamic tool executing with host privileges after a trusted operator registers it.
 - **LLM hallucination or quality** — Issues with LLM response accuracy or behavior that don't involve security boundary violations.
 - **Judge fail-open behavior** — The LLM judge layer intentionally fails open (returns `:safe` on timeout/error) to avoid blocking the pipeline. This is a design trade-off, not a vulnerability.
+- **IOGuard fail-closed behavior** — The I/O guard layer intentionally fails closed (denies the operation on any crash). Reports that the fail-closed behavior is "too restrictive" are not vulnerabilities.
+- **Sandbox configuration choices** — Reports that the sandbox default policy is set to `allow` by the operator. The operator chose this configuration.
+- **Hardcoded denylist bypasses via allowed paths** — If the operator explicitly allows a path that overlaps with the hardcoded denylist, the hardcoded denylist takes precedence. Reports that the operator "cannot override" the hardcoded denylist are by design.
 - **Session data visibility** — The `sessions` tool allows viewing other sessions' history on the same instance. This is expected in the single-operator model.
 - **Local filesystem access** — Reports that require pre-existing write access to `~/.traitee/` or the workspace directory.
+- **Docker unavailability fallback** — When Docker is enabled but unavailable, commands fall back to host execution with all other security layers still active. This is documented behavior.
 - **Scanner-only claims** — Automated scanner findings without a working reproduction against a current revision.
 
 ## Common False-Positive Patterns
@@ -192,6 +233,10 @@ These are frequently reported but typically closed with no code change:
 - Canary token detection gaps that don't result in actual data exfiltration
 - Rate limiter bypass through legitimate usage patterns
 - Missing HSTS on default local deployments
+- IOGuard pattern false positives (e.g., file path that matches `.pem` but is not a private key) — these are intentional over-matches in a defense-in-depth system
+- Reports that the hardcoded denylist blocks legitimate operator paths — the operator should use the sandbox allow rules with appropriate permissions
+- Audit trail event volume or retention — the 10K ring buffer is a configurable design choice
+- Reports that Docker isolation can be bypassed by disabling it in config — Docker is an optional layer, not a mandatory boundary
 
 ## Responsible Disclosure
 
@@ -201,14 +246,34 @@ Traitee is a personal project. There is no bug bounty program. Please still disc
 
 For a hardened Traitee deployment:
 
+**OS & Network**
+
 - [ ] Run as a non-root, dedicated OS user
-- [ ] Set `~/.traitee/` permissions to owner-only
-- [ ] Use environment variables for all secrets (never hardcode in TOML)
-- [ ] Disable unused tools (especially `bash`, `file`, `browser`)
 - [ ] Keep Traitee bound to localhost or a trusted network
 - [ ] Use a reverse proxy with authentication if remote access is needed
 - [ ] Enable full-disk encryption for data-at-rest protection
+- [ ] Keep Elixir, OTP, and all dependencies up to date
+
+**Secrets & Credentials**
+
+- [ ] Set `~/.traitee/` permissions to owner-only (`700` on Unix)
+- [ ] Use environment variables for all secrets (never hardcode in TOML)
+- [ ] Run `mix traitee.doctor` to audit credential configuration
+
+**Access Control**
+
 - [ ] Review and restrict channel allowlists
 - [ ] Set DM policy to `pairing` or `closed` for all channels
-- [ ] Run `mix traitee.doctor` to audit configuration
-- [ ] Keep Elixir, OTP, and all dependencies up to date
+- [ ] Disable unused tools (especially `bash`, `file`, `browser`)
+
+**Filesystem Security**
+
+- [ ] Enable sandbox mode: `security.filesystem.sandbox_mode = true`
+- [ ] Set default policy to deny: `security.filesystem.default_policy = "deny"`
+- [ ] Configure explicit allow rules only for directories the assistant needs
+- [ ] Enable exec gates: `security.filesystem.exec_gate.enabled = true`
+- [ ] Enable audit trail: `security.filesystem.audit.enabled = true`
+- [ ] Enable Docker isolation if available: `security.filesystem.docker.enabled = true`
+- [ ] Run `mix traitee.security` to audit filesystem security posture
+- [ ] Run `mix traitee.security --gaps` to identify configuration weaknesses
+- [ ] Review audit trail periodically: `mix traitee.security --audit`
