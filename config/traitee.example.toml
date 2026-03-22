@@ -1,0 +1,73 @@
+# Traitee Configuration
+# Copy to ~/.traitee/config.toml and adjust as needed.
+# Values prefixed with "env:" are resolved from environment variables at runtime.
+
+[agent]
+model = "anthropic/claude-sonnet-4"
+fallback_model = "openai/gpt-4o"
+system_prompt = "You are a helpful personal AI assistant called Traitee."
+
+[memory]
+stm_capacity = 50        # Messages to keep in short-term memory
+mtm_chunk_size = 20      # Messages per summarization chunk
+embedding_model = "openai/text-embedding-3-small"
+
+[channels.discord]
+enabled = false
+token = "env:DISCORD_BOT_TOKEN"
+dm_policy = "pairing"          # "open" | "pairing" | "closed" (default: pairing)
+
+[channels.telegram]
+enabled = false
+token = "env:TELEGRAM_BOT_TOKEN"
+dm_policy = "pairing"          # "open" | "pairing" | "closed" (default: pairing)
+# allow_from = ["123456789"]   # Restrict to specific Telegram user IDs (omit or ["*"] to allow all)
+
+[channels.whatsapp]
+enabled = false
+token = "env:WHATSAPP_TOKEN"
+phone_number_id = "env:WHATSAPP_PHONE_ID"
+verify_token = "my-verify-token"
+dm_policy = "pairing"          # "open" | "pairing" | "closed" (default: pairing)
+# allow_from = ["15551234567"]  # Restrict to specific phone numbers
+
+[channels.signal]
+enabled = false
+cli_path = "signal-cli"
+phone_number = "+1234567890"
+dm_policy = "pairing"          # "open" | "pairing" | "closed" (default: pairing)
+# allow_from = ["+15551234567"] # Restrict to specific phone numbers
+
+[tools]
+bash = { enabled = true, sandbox = false }
+file = { enabled = true }
+web_search = { enabled = false }
+browser = { enabled = false }
+
+[security]
+enabled = true
+owner_id = ""                  # Primary owner ID — used as session key and fallback for all channels
+
+[security.channel_ids]
+# Per-channel owner identities. Maps your platform-specific user ID per channel.
+# Falls back to owner_id above if not set for a given channel.
+# telegram = "7886908010"      # Telegram user ID (numeric)
+# discord = "123456789012345"  # Discord snowflake
+# whatsapp = "+15551234567"    # Phone number (E.164)
+# signal = "+15551234567"      # Phone number (E.164)
+
+[security.cognitive]
+enabled = true
+reminder_interval = 8     # Inject identity reminders every N user turns
+canary_enabled = true      # Embed canary tokens to detect system prompt leakage
+output_guard = "redact"    # Action on output violation: "log", "redact", or "block"
+
+[security.cognitive.judge]
+enabled = true
+model = "xai/grok-4-1-fast-non-reasoning"
+timeout_ms = 3000          # Max wait for judge verdict before failing open
+min_message_length = 10    # Skip judging very short messages
+
+[gateway]
+port = 4000
+host = "127.0.0.1"
