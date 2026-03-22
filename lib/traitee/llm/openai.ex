@@ -11,24 +11,44 @@ defmodule Traitee.LLM.OpenAI do
 
   @models %{
     "gpt-4o" => %ModelInfo{
-      id: "gpt-4o", provider: :openai, context_window: 128_000,
-      max_output_tokens: 16_384, cost_per_1k_input: 0.0025,
-      cost_per_1k_output: 0.01, supports_tools: true, supports_vision: true
+      id: "gpt-4o",
+      provider: :openai,
+      context_window: 128_000,
+      max_output_tokens: 16_384,
+      cost_per_1k_input: 0.0025,
+      cost_per_1k_output: 0.01,
+      supports_tools: true,
+      supports_vision: true
     },
     "gpt-4o-mini" => %ModelInfo{
-      id: "gpt-4o-mini", provider: :openai, context_window: 128_000,
-      max_output_tokens: 16_384, cost_per_1k_input: 0.00015,
-      cost_per_1k_output: 0.0006, supports_tools: true, supports_vision: true
+      id: "gpt-4o-mini",
+      provider: :openai,
+      context_window: 128_000,
+      max_output_tokens: 16_384,
+      cost_per_1k_input: 0.00015,
+      cost_per_1k_output: 0.0006,
+      supports_tools: true,
+      supports_vision: true
     },
     "gpt-4.1" => %ModelInfo{
-      id: "gpt-4.1", provider: :openai, context_window: 1_000_000,
-      max_output_tokens: 32_768, cost_per_1k_input: 0.002,
-      cost_per_1k_output: 0.008, supports_tools: true, supports_vision: true
+      id: "gpt-4.1",
+      provider: :openai,
+      context_window: 1_000_000,
+      max_output_tokens: 32_768,
+      cost_per_1k_input: 0.002,
+      cost_per_1k_output: 0.008,
+      supports_tools: true,
+      supports_vision: true
     },
     "o3-mini" => %ModelInfo{
-      id: "o3-mini", provider: :openai, context_window: 200_000,
-      max_output_tokens: 100_000, cost_per_1k_input: 0.0011,
-      cost_per_1k_output: 0.0044, supports_tools: true, supports_vision: false
+      id: "o3-mini",
+      provider: :openai,
+      context_window: 200_000,
+      max_output_tokens: 100_000,
+      cost_per_1k_input: 0.0011,
+      cost_per_1k_output: 0.0044,
+      supports_tools: true,
+      supports_vision: false
     }
   }
 
@@ -65,16 +85,23 @@ defmodule Traitee.LLM.OpenAI do
         into: fn {:data, data}, acc ->
           for line <- String.split(data, "\n", trim: true) do
             case line do
-              "data: [DONE]" -> :ok
+              "data: [DONE]" ->
+                :ok
+
               "data: " <> json ->
                 case Jason.decode(json) do
                   {:ok, %{"choices" => [%{"delta" => %{"content" => c}}]}} when is_binary(c) ->
                     callback.(c)
-                  _ -> :ok
+
+                  _ ->
+                    :ok
                 end
-              _ -> :ok
+
+              _ ->
+                :ok
             end
           end
+
           {:cont, acc}
         end
       )
@@ -108,9 +135,14 @@ defmodule Traitee.LLM.OpenAI do
   @impl true
   def model_info(model_id) do
     Map.get(@models, model_id, %ModelInfo{
-      id: model_id, provider: :openai, context_window: 128_000,
-      max_output_tokens: 16_384, cost_per_1k_input: 0.002,
-      cost_per_1k_output: 0.008, supports_tools: true, supports_vision: false
+      id: model_id,
+      provider: :openai,
+      context_window: 128_000,
+      max_output_tokens: 16_384,
+      cost_per_1k_input: 0.002,
+      cost_per_1k_output: 0.008,
+      supports_tools: true,
+      supports_vision: false
     })
   end
 

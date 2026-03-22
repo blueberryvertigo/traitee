@@ -65,8 +65,11 @@ defmodule Mix.Tasks.Traitee.Cron do
     }
 
     case Scheduler.add_job(attrs) do
-      {:ok, job} -> IO.puts("Job '#{job.name}' added (#{job_type}, next: #{job.next_run_at || "now"})")
-      {:error, changeset} -> IO.puts("Error: #{inspect(changeset.errors)}")
+      {:ok, job} ->
+        IO.puts("Job '#{job.name}' added (#{job_type}, next: #{job.next_run_at || "now"})")
+
+      {:error, changeset} ->
+        IO.puts("Error: #{inspect(changeset.errors)}")
     end
   end
 

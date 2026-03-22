@@ -56,22 +56,27 @@ defmodule Mix.Tasks.Traitee.Memory do
 
     if results.entities != [] do
       IO.puts("Entities:")
+
       Enum.each(results.entities, fn e ->
         IO.puts("  [#{e.entity_type}] #{e.name} (mentioned #{e.mention_count}x)")
       end)
+
       IO.puts("")
     end
 
     if results.facts != [] do
       IO.puts("Facts:")
+
       Enum.each(Enum.take(results.facts, 10), fn f ->
         IO.puts("  - #{f.content}")
       end)
+
       IO.puts("")
     end
 
     if results.summaries != [] do
       IO.puts("Summaries:")
+
       Enum.each(Enum.take(results.summaries, 3), fn s ->
         IO.puts("  #{String.slice(s.content, 0, 200)}...")
         IO.puts("")

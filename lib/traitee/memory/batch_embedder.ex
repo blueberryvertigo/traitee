@@ -113,12 +113,13 @@ defmodule Traitee.Memory.BatchEmbedder do
   end
 
   defp update_stats(state, queue, embedded, failed) do
-    %{state |
-      queue: queue,
-      stats: %{
-        total_embedded: state.stats.total_embedded + embedded,
-        total_failed: state.stats.total_failed + failed
-      }
+    %{
+      state
+      | queue: queue,
+        stats: %{
+          total_embedded: state.stats.total_embedded + embedded,
+          total_failed: state.stats.total_failed + failed
+        }
     }
   end
 

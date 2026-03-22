@@ -17,7 +17,7 @@ defmodule Traitee.Doctor do
       check_disk_space(),
       check_config(),
       check_sessions(),
-      check_security(),
+      check_security()
     ]
   end
 
@@ -80,9 +80,16 @@ defmodule Traitee.Doctor do
 
   defp check_memory_system do
     vector_count = Traitee.Memory.Vector.count()
-    ets_tables = :ets.all() |> Enum.filter(fn t -> is_atom(t) and String.starts_with?(to_string(t), "traitee") end)
 
-    result(:memory_system, :ok, "#{length(ets_tables)} ETS tables, #{vector_count} vectors indexed")
+    ets_tables =
+      :ets.all()
+      |> Enum.filter(fn t -> is_atom(t) and String.starts_with?(to_string(t), "traitee") end)
+
+    result(
+      :memory_system,
+      :ok,
+      "#{length(ets_tables)} ETS tables, #{vector_count} vectors indexed"
+    )
   rescue
     _ -> result(:memory_system, :warning, "Could not inspect memory system")
   end
@@ -161,8 +168,14 @@ defmodule Traitee.Doctor do
 
     warnings =
       []
-      |> then(fn w -> if config[:agent][:system_prompt] == nil, do: ["no system prompt" | w], else: w end)
-      |> then(fn w -> if config[:tools][:web_search][:enabled] && !config[:tools][:web_search][:api_key], do: ["web_search enabled but no API key" | w], else: w end)
+      |> then(fn w ->
+        if config[:agent][:system_prompt] == nil, do: ["no system prompt" | w], else: w
+      end)
+      |> then(fn w ->
+        if config[:tools][:web_search][:enabled] && !config[:tools][:web_search][:api_key],
+          do: ["web_search enabled but no API key" | w],
+          else: w
+      end)
 
     if warnings == [] do
       result(:config, :ok, "Config valid")

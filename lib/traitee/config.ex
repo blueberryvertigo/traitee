@@ -15,7 +15,8 @@ defmodule Traitee.Config do
     agent: %{
       model: "anthropic/claude-sonnet-4",
       fallback_model: "openai/gpt-4o",
-      system_prompt: "You are Traitee, a personal AI assistant platform. Be concise, helpful, and personable."
+      system_prompt:
+        "You are Traitee, a personal AI assistant platform. Be concise, helpful, and personable."
     },
     memory: %{
       stm_capacity: 50,
@@ -25,7 +26,13 @@ defmodule Traitee.Config do
     channels: %{
       discord: %{enabled: false, token: nil, dm_policy: "pairing"},
       telegram: %{enabled: false, token: nil, dm_policy: "pairing"},
-      whatsapp: %{enabled: false, token: nil, phone_number_id: nil, verify_token: nil, dm_policy: "pairing"},
+      whatsapp: %{
+        enabled: false,
+        token: nil,
+        phone_number_id: nil,
+        verify_token: nil,
+        dm_policy: "pairing"
+      },
       signal: %{enabled: false, cli_path: "signal-cli", phone_number: nil, dm_policy: "pairing"},
       webchat: %{enabled: true, dm_policy: "pairing"}
     },

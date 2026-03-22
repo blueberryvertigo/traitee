@@ -86,7 +86,10 @@ defmodule Traitee.Channels.Telegram do
 
   @impl true
   def handle_info({:poll_result, {:error, %{"error_code" => 401}}}, state) do
-    Logger.error("Telegram token is invalid (401 Unauthorized). Stopping polling. Re-run `mix traitee.onboard` to fix.")
+    Logger.error(
+      "Telegram token is invalid (401 Unauthorized). Stopping polling. Re-run `mix traitee.onboard` to fix."
+    )
+
     {:noreply, %{state | token: nil}}
   end
 
@@ -94,7 +97,11 @@ defmodule Traitee.Channels.Telegram do
   def handle_info({:poll_result, {:error, reason}}, state) do
     count = state.error_count + 1
     delay = min(1_000 * Integer.pow(2, count), 60_000)
-    Logger.warning("Telegram poll error (attempt #{count}, retry in #{delay}ms): #{inspect(reason)}")
+
+    Logger.warning(
+      "Telegram poll error (attempt #{count}, retry in #{delay}ms): #{inspect(reason)}"
+    )
+
     schedule_poll(delay)
     {:noreply, %{state | error_count: count}}
   end
@@ -110,15 +117,16 @@ defmodule Traitee.Channels.Telegram do
     chat = msg["chat"]
 
     if text && from do
-      inbound = Channel.build_inbound(
-        text,
-        to_string(from["id"]),
-        :telegram,
-        sender_name: from["first_name"],
-        channel_id: to_string(chat["id"]),
-        reply_to: chat["id"],
-        metadata: %{message_id: msg["message_id"], chat_type: chat["type"]}
-      )
+      inbound =
+        Channel.build_inbound(
+          text,
+          to_string(from["id"]),
+          :telegram,
+          sender_name: from["first_name"],
+          channel_id: to_string(chat["id"]),
+          reply_to: chat["id"],
+          metadata: %{message_id: msg["message_id"], chat_type: chat["type"]}
+        )
 
       Task.start(fn -> MessageRouter.route(inbound) end)
     end
@@ -154,7 +162,10 @@ defmodule Traitee.Channels.Telegram do
   defp send_telegram_message(token, chat_id, text) do
     url = "https://api.telegram.org/bot#{token}/sendMessage"
 
-    case Req.post(url, json: %{chat_id: chat_id, text: text, parse_mode: "Markdown"}, retry: false) do
+    case Req.post(url,
+           json: %{chat_id: chat_id, text: text, parse_mode: "Markdown"},
+           retry: false
+         ) do
       {:ok, %{status: 200}} -> :ok
       {:ok, %{body: body}} -> {:error, body}
       {:error, reason} -> {:error, reason}
@@ -168,9 +179,15 @@ defmodule Traitee.Channels.Telegram do
         Req.post(url, json: %{drop_pending_updates: false}, retry: false, receive_timeout: 5_000)
 
         flush_url = "https://api.telegram.org/bot#{token}/getUpdates"
-        case Req.get(flush_url, params: [offset: -1, timeout: 0], retry: false, receive_timeout: 5_000) do
+
+        case Req.get(flush_url,
+               params: [offset: -1, timeout: 0],
+               retry: false,
+               receive_timeout: 5_000
+             ) do
           {:ok, %{status: 200, body: %{"ok" => true, "result" => [update | _]}}} ->
             :persistent_term.put({__MODULE__, :offset}, update["update_id"] + 1)
+
           _ ->
             :ok
         end

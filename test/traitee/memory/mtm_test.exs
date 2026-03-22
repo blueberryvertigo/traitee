@@ -41,7 +41,12 @@ defmodule Traitee.Memory.MTMTest do
 
       summaries = MTM.get_summaries(sid)
       assert length(summaries) == 3
-      assert Enum.map(summaries, & &1.content) == ["First summary", "Second summary", "Third summary"]
+
+      assert Enum.map(summaries, & &1.content) == [
+               "First summary",
+               "Second summary",
+               "Third summary"
+             ]
     end
 
     test "returns empty list for unknown session" do
@@ -125,10 +130,12 @@ defmodule Traitee.Memory.MTMTest do
     test "returns only summaries with embeddings" do
       sid = unique_session_id()
       {:ok, _} = MTM.store_summary(sid, "No embedding")
-      {:ok, _} = MTM.store_summary(sid, "Has embedding", %{
-        message_count: 5,
-        embedding: :erlang.term_to_binary([0.1, 0.2, 0.3])
-      })
+
+      {:ok, _} =
+        MTM.store_summary(sid, "Has embedding", %{
+          message_count: 5,
+          embedding: :erlang.term_to_binary([0.1, 0.2, 0.3])
+        })
 
       with_emb = MTM.get_with_embeddings(sid)
       assert length(with_emb) == 1

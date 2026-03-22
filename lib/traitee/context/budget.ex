@@ -50,7 +50,9 @@ defmodule Traitee.Context.Budget do
     response_budget = min(max_output, round(context_window * @response_fraction))
     safety_margin = round(context_window * @safety_fraction)
 
-    fixed_cost = system_tokens + message_tokens + tool_schema_tokens + response_budget + safety_margin
+    fixed_cost =
+      system_tokens + message_tokens + tool_schema_tokens + response_budget + safety_margin
+
     available = max(context_window - fixed_cost, 0)
 
     {skills_budget, ltm_budget, mtm_budget, tool_budget, reminder_budget, stm_budget} =
@@ -125,6 +127,7 @@ defmodule Traitee.Context.Budget do
     lines =
       Enum.map(slots, fn {name, allocated, used} ->
         pct = if allocated > 0, do: round(used / allocated * 100), else: 0
+
         "  #{String.pad_trailing(name, 10)} #{String.pad_leading(Integer.to_string(used), 6)}/#{String.pad_leading(Integer.to_string(allocated), 6)} (#{pct}%)"
       end)
 
@@ -191,7 +194,8 @@ defmodule Traitee.Context.Budget do
           {s, l, m, t, min(round(available * ratio * scale), round(cap * scale))}
       end)
 
-    stm_budget = max(available - skills_budget - ltm_budget - mtm_budget - tool_budget - reminder_budget, 0)
+    stm_budget =
+      max(available - skills_budget - ltm_budget - mtm_budget - tool_budget - reminder_budget, 0)
 
     {
       max(skills_budget, 0),

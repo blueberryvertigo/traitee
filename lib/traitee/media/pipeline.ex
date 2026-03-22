@@ -31,7 +31,8 @@ defmodule Traitee.Media.Pipeline do
     end
   end
 
-  @spec detect_type(String.t()) :: {:ok, :image | :audio | :document | :video} | {:error, :unknown_type}
+  @spec detect_type(String.t()) ::
+          {:ok, :image | :audio | :document | :video} | {:error, :unknown_type}
   def detect_type(path) do
     ext = path |> Path.extname() |> String.downcase()
 
@@ -53,7 +54,11 @@ defmodule Traitee.Media.Pipeline do
 
     case Traitee.LLM.Router.complete(%{
            messages: [
-             %{role: "user", content: "Summarize the following content in #{max_len} characters or less:\n\n#{text}"}
+             %{
+               role: "user",
+               content:
+                 "Summarize the following content in #{max_len} characters or less:\n\n#{text}"
+             }
            ]
          }) do
       {:ok, resp} -> {:ok, resp.content}
@@ -151,8 +156,9 @@ defmodule Traitee.Media.Pipeline do
   end
 
   defp transcribe_whisper(path) do
-    api_key = Traitee.Config.get([:channels, :whatsapp, :token]) ||
-              System.get_env("OPENAI_API_KEY")
+    api_key =
+      Traitee.Config.get([:channels, :whatsapp, :token]) ||
+        System.get_env("OPENAI_API_KEY")
 
     unless api_key do
       {:error, :no_api_key}

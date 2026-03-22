@@ -105,8 +105,12 @@ defmodule Traitee.Cron.Parser do
       [val_str] ->
         case Integer.parse(val_str) do
           {val, ""} ->
-            if Enum.member?(range, val), do: {:ok, [val]}, else: {:error, "invalid value: #{val_str}"}
-          _ -> {:error, "invalid value: #{val_str}"}
+            if Enum.member?(range, val),
+              do: {:ok, [val]},
+              else: {:error, "invalid value: #{val_str}"}
+
+          _ ->
+            {:error, "invalid value: #{val_str}"}
         end
 
       _ ->

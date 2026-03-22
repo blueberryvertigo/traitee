@@ -110,7 +110,12 @@ defmodule Traitee.Cron.Scheduler do
               %{last_run_at: now, next_run_at: next, run_count: job.run_count + 1}
 
             {:error, _} ->
-              %{last_run_at: now, run_count: job.run_count + 1, consecutive_errors: job.consecutive_errors + 1, last_error: "invalid cron expression"}
+              %{
+                last_run_at: now,
+                run_count: job.run_count + 1,
+                consecutive_errors: job.consecutive_errors + 1,
+                last_error: "invalid cron expression"
+              }
           end
       end
 
@@ -150,8 +155,14 @@ defmodule Traitee.Cron.Scheduler do
 
   defp set_enabled(name, enabled) do
     case Repo.get_by(Schema, name: name) do
-      nil -> {:error, :not_found}
-      job -> job |> Schema.changeset(%{enabled: enabled}) |> Repo.update() |> then(fn {:ok, _} -> :ok end)
+      nil ->
+        {:error, :not_found}
+
+      job ->
+        job
+        |> Schema.changeset(%{enabled: enabled})
+        |> Repo.update()
+        |> then(fn {:ok, _} -> :ok end)
     end
   end
 

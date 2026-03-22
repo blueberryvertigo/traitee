@@ -41,8 +41,12 @@ defmodule Traitee.Channels.Discord do
 
       true ->
         Application.put_env(:nostrum, :token, token)
+
         Application.put_env(:nostrum, :gateway_intents, [
-          :guilds, :guild_messages, :message_content, :direct_messages
+          :guilds,
+          :guild_messages,
+          :message_content,
+          :direct_messages
         ])
 
         Logger.info("Discord channel starting...")
@@ -74,15 +78,16 @@ defmodule Traitee.Channels.Discord do
   @impl true
   def handle_info({:nostrum_message, message}, state) do
     unless message.author.bot do
-      inbound = Channel.build_inbound(
-        message.content,
-        to_string(message.author.id),
-        :discord,
-        sender_name: message.author.username,
-        channel_id: to_string(message.channel_id),
-        reply_to: message.channel_id,
-        metadata: %{guild_id: message.guild_id, message_id: message.id}
-      )
+      inbound =
+        Channel.build_inbound(
+          message.content,
+          to_string(message.author.id),
+          :discord,
+          sender_name: message.author.username,
+          channel_id: to_string(message.channel_id),
+          reply_to: message.channel_id,
+          metadata: %{guild_id: message.guild_id, message_id: message.id}
+        )
 
       Task.start(fn -> MessageRouter.route(inbound) end)
     end

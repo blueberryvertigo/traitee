@@ -78,7 +78,9 @@ defmodule Traitee.LLM.Router do
     fallback_str = config[:fallback_model]
 
     {primary_mod, primary_id} = parse_or_default(model_str)
-    {fallback_mod, fallback_id} = if fallback_str, do: parse_or_default(fallback_str), else: {nil, nil}
+
+    {fallback_mod, fallback_id} =
+      if fallback_str, do: parse_or_default(fallback_str), else: {nil, nil}
 
     state = %__MODULE__{
       primary_provider: primary_mod,
@@ -204,7 +206,8 @@ defmodule Traitee.LLM.Router do
     updated = %{
       requests: state.usage.requests + 1,
       tokens_in: state.usage.tokens_in + (usage[:prompt_tokens] || usage.prompt_tokens || 0),
-      tokens_out: state.usage.tokens_out + (usage[:completion_tokens] || usage.completion_tokens || 0),
+      tokens_out:
+        state.usage.tokens_out + (usage[:completion_tokens] || usage.completion_tokens || 0),
       cost: state.usage.cost + estimate_cost(state, usage)
     }
 
@@ -215,8 +218,14 @@ defmodule Traitee.LLM.Router do
 
   defp estimate_cost(state, usage) do
     info = state.primary_provider.model_info(state.primary_model)
-    input_cost = (usage[:prompt_tokens] || usage.prompt_tokens || 0) / 1000 * (info.cost_per_1k_input || 0)
-    output_cost = (usage[:completion_tokens] || usage.completion_tokens || 0) / 1000 * (info.cost_per_1k_output || 0)
+
+    input_cost =
+      (usage[:prompt_tokens] || usage.prompt_tokens || 0) / 1000 * (info.cost_per_1k_input || 0)
+
+    output_cost =
+      (usage[:completion_tokens] || usage.completion_tokens || 0) / 1000 *
+        (info.cost_per_1k_output || 0)
+
     input_cost + output_cost
   end
 

@@ -37,7 +37,13 @@ defmodule Traitee.Security.CognitiveTest do
     end
 
     test "reminder intensity scales with threat level", %{session: session} do
-      threat = %Threat{category: :instruction_override, severity: :critical, pattern_name: "t", matched_text: "t"}
+      threat = %Threat{
+        category: :instruction_override,
+        severity: :critical,
+        pattern_name: "t",
+        matched_text: "t"
+      }
+
       for _ <- 1..5, do: ThreatTracker.record(session, threat)
 
       reminders = Cognitive.reminders_for(session, message_count: 8)
@@ -47,7 +53,13 @@ defmodule Traitee.Security.CognitiveTest do
     end
 
     test "caps at 2 reminders max", %{session: session} do
-      threat = %Threat{category: :role_hijack, severity: :high, pattern_name: "t", matched_text: "t"}
+      threat = %Threat{
+        category: :role_hijack,
+        severity: :high,
+        pattern_name: "t",
+        matched_text: "t"
+      }
+
       ThreatTracker.record(session, threat)
 
       reminders = Cognitive.reminders_for(session, message_count: 8, has_recent_threats: true)

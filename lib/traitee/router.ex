@@ -29,7 +29,10 @@ defmodule Traitee.Router do
         Logger.info("Blocked #{sender_id}@#{channel_type}: #{reason}")
 
       {:pairing, code} ->
-        deliver_response(inbound, "You're not yet approved. Your pairing code is: #{code}\nAsk the owner to run: /pairing approve #{code}")
+        deliver_response(
+          inbound,
+          "You're not yet approved. Your pairing code is: #{code}\nAsk the owner to run: /pairing approve #{code}"
+        )
 
       {:auto_reply, response} ->
         deliver_response(inbound, response)
@@ -122,7 +125,9 @@ defmodule Traitee.Router do
 
   defp stop_typing(_inbound) do
     case Process.get({__MODULE__, :typing_ref}) do
-      nil -> :ok
+      nil ->
+        :ok
+
       ref ->
         Traitee.Channels.Typing.stop(ref)
         Process.delete({__MODULE__, :typing_ref})
@@ -145,10 +150,17 @@ defmodule Traitee.Router do
     context = %{inbound: inbound}
 
     case CommandRegistry.execute(text, context) do
-      {:ok, response} -> deliver_response(inbound, response)
-      {:error, :unknown_command} -> deliver_response(inbound, "Unknown command: #{text}. Type /help for commands.")
-      {:error, :unauthorized} -> deliver_response(inbound, "You don't have permission for that command.")
-      {:error, reason} -> deliver_response(inbound, "Error: #{inspect(reason)}")
+      {:ok, response} ->
+        deliver_response(inbound, response)
+
+      {:error, :unknown_command} ->
+        deliver_response(inbound, "Unknown command: #{text}. Type /help for commands.")
+
+      {:error, :unauthorized} ->
+        deliver_response(inbound, "You don't have permission for that command.")
+
+      {:error, reason} ->
+        deliver_response(inbound, "Error: #{inspect(reason)}")
     end
   end
 

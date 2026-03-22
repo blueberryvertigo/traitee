@@ -30,7 +30,8 @@ defmodule Traitee.Tools.ChannelSend do
         },
         "target" => %{
           "type" => "string",
-          "description" => "Optional explicit target (chat ID / user ID). If omitted, uses the stored delivery info from the session."
+          "description" =>
+            "Optional explicit target (chat ID / user ID). If omitted, uses the stored delivery info from the session."
         }
       },
       "required" => ["channel", "message"]
@@ -52,7 +53,10 @@ defmodule Traitee.Tools.ChannelSend do
         {:error,
          "No delivery target known for #{channel_str}. " <>
            "The user needs to message me on #{channel_str} first, or provide a target ID. " <>
-           if(available != "", do: "Known channels: #{available}", else: "No channels connected yet.")}
+           if(available != "",
+             do: "Known channels: #{available}",
+             else: "No channels connected yet."
+           )}
 
       target_id ->
         outbound = %{
@@ -78,7 +82,8 @@ defmodule Traitee.Tools.ChannelSend do
 
   def execute(_), do: {:error, "Missing required parameters: channel, message"}
 
-  defp resolve_target(_channel, explicit, _session_channels) when is_binary(explicit) and explicit != "" do
+  defp resolve_target(_channel, explicit, _session_channels)
+       when is_binary(explicit) and explicit != "" do
     explicit
   end
 

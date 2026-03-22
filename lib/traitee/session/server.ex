@@ -111,7 +111,10 @@ defmodule Traitee.Session.Server do
 
     if all_threats != [] do
       ThreatTracker.record_all(state.session_id, all_threats)
-      Logger.warning("[#{state.session_id}] input threats: #{inspect(Enum.map(all_threats, & &1.pattern_name))}")
+
+      Logger.warning(
+        "[#{state.session_id}] input threats: #{inspect(Enum.map(all_threats, & &1.pattern_name))}"
+      )
     end
 
     stm_state = STM.push(state.stm_state, "user", sanitized_text, channel: channel)
@@ -119,14 +122,15 @@ defmodule Traitee.Session.Server do
 
     tools = ToolRegistry.tool_schemas()
 
-    {messages, _budget} = Engine.assemble(
-      state.session_id,
-      stm_state,
-      sanitized_text,
-      tools: if(tools != [], do: tools, else: nil),
-      message_count: state.message_count,
-      has_recent_threats: has_recent_threats
-    )
+    {messages, _budget} =
+      Engine.assemble(
+        state.session_id,
+        stm_state,
+        sanitized_text,
+        tools: if(tools != [], do: tools, else: nil),
+        message_count: state.message_count,
+        has_recent_threats: has_recent_threats
+      )
 
     case run_completion_loop(messages, tools, state) do
       {:ok, response_text} ->
@@ -211,7 +215,8 @@ defmodule Traitee.Session.Server do
 
   defp run_completion_loop(messages, tools, depth, state) do
     if depth > 5 do
-      {:ok, "I got carried away with tools there. Could you rephrase your question? I'll try to answer directly."}
+      {:ok,
+       "I got carried away with tools there. Could you rephrase your question? I'll try to answer directly."}
     else
       request = %{messages: messages}
 
@@ -223,7 +228,8 @@ defmodule Traitee.Session.Server do
         end
 
       case result do
-        {:ok, %{tool_calls: tool_calls, content: content}} when is_list(tool_calls) and tool_calls != [] ->
+        {:ok, %{tool_calls: tool_calls, content: content}}
+        when is_list(tool_calls) and tool_calls != [] ->
           tool_results = execute_tools(tool_calls, state)
 
           tool_reminder =

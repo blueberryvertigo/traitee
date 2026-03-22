@@ -23,37 +23,45 @@ defmodule Traitee.Memory.CompactionPipelineTest do
 
     session_id = unique_session_id()
 
-    llm_response = Jason.encode!(%{
-      "summary" => "Users discussed deploying Elixir services on AWS using Docker containers.",
-      "entities" => [
-        %{
-          "name" => "Elixir",
-          "type" => "technology",
-          "facts" => ["Elixir is used for backend services", "Elixir compiles to BEAM bytecode"],
-          "relations" => [%{"target" => "AWS", "relation_type" => "deployed_on", "description" => "Production deployment target"}]
-        },
-        %{
-          "name" => "AWS",
-          "type" => "platform",
-          "facts" => ["AWS hosts the production environment"]
-        },
-        %{
-          "name" => "Docker",
-          "type" => "tool",
-          "facts" => ["Docker is used for containerization"],
-          "relations" => [%{"target" => "AWS", "relation_type" => "runs_on"}]
-        }
-      ]
-    })
+    llm_response =
+      Jason.encode!(%{
+        "summary" => "Users discussed deploying Elixir services on AWS using Docker containers.",
+        "entities" => [
+          %{
+            "name" => "Elixir",
+            "type" => "technology",
+            "facts" => ["Elixir is used for backend services", "Elixir compiles to BEAM bytecode"],
+            "relations" => [
+              %{
+                "target" => "AWS",
+                "relation_type" => "deployed_on",
+                "description" => "Production deployment target"
+              }
+            ]
+          },
+          %{
+            "name" => "AWS",
+            "type" => "platform",
+            "facts" => ["AWS hosts the production environment"]
+          },
+          %{
+            "name" => "Docker",
+            "type" => "tool",
+            "facts" => ["Docker is used for containerization"],
+            "relations" => [%{"target" => "AWS", "relation_type" => "runs_on"}]
+          }
+        ]
+      })
 
     fake_embedding = fake_embedding(384)
 
     Mox.stub(Traitee.LLM.RouterMock, :complete, fn _request ->
-      {:ok, %CompletionResponse{
-        content: llm_response,
-        model: "test-model",
-        usage: %{prompt_tokens: 100, completion_tokens: 50, total_tokens: 150}
-      }}
+      {:ok,
+       %CompletionResponse{
+         content: llm_response,
+         model: "test-model",
+         usage: %{prompt_tokens: 100, completion_tokens: 50, total_tokens: 150}
+       }}
     end)
 
     Mox.stub(Traitee.LLM.RouterMock, :embed, fn _texts ->
@@ -70,15 +78,18 @@ defmodule Traitee.Memory.CompactionPipelineTest do
   end
 
   describe "compaction pipeline" do
-    test "flush processes pending messages into MTM summary and LTM entities", %{session_id: session_id} do
-      messages = build_conversation([
-        {"user", "How should we deploy our Elixir app?"},
-        {"assistant", "I'd recommend Docker containers on AWS ECS."},
-        {"user", "What about the database?"},
-        {"assistant", "RDS PostgreSQL works well with Elixir. You can use Ecto."},
-        {"user", "Let's go with that. Can you outline the steps?"},
-        {"assistant", "Sure! First, create a Dockerfile with a multi-stage build..."}
-      ])
+    test "flush processes pending messages into MTM summary and LTM entities", %{
+      session_id: session_id
+    } do
+      messages =
+        build_conversation([
+          {"user", "How should we deploy our Elixir app?"},
+          {"assistant", "I'd recommend Docker containers on AWS ECS."},
+          {"user", "What about the database?"},
+          {"assistant", "RDS PostgreSQL works well with Elixir. You can use Ecto."},
+          {"user", "Let's go with that. Can you outline the steps?"},
+          {"assistant", "Sure! First, create a Dockerfile with a multi-stage build..."}
+        ])
 
       Compactor.compact(session_id, messages)
       Compactor.flush(session_id)
@@ -111,14 +122,16 @@ defmodule Traitee.Memory.CompactionPipelineTest do
       assert "Elixir compiles to BEAM bytecode" in fact_contents
 
       elixir_rels = LTM.get_relations(elixir.id)
+
       assert Enum.any?(elixir_rels, fn r ->
-        r.direction == :outgoing and r.relation.relation_type == "deployed_on"
-      end)
+               r.direction == :outgoing and r.relation.relation_type == "deployed_on"
+             end)
 
       docker_rels = LTM.get_relations(docker.id)
+
       assert Enum.any?(docker_rels, fn r ->
-        r.direction == :outgoing and r.relation.relation_type == "runs_on"
-      end)
+               r.direction == :outgoing and r.relation.relation_type == "runs_on"
+             end)
     end
 
     test "STM eviction triggers compaction into MTM and LTM", %{session_id: session_id} do
@@ -148,15 +161,17 @@ defmodule Traitee.Memory.CompactionPipelineTest do
     end
 
     test "multiple flushes produce multiple summaries", %{session_id: session_id} do
-      batch_1 = build_conversation([
-        {"user", "Tell me about Elixir"},
-        {"assistant", "Elixir is a functional language on the BEAM VM."}
-      ])
+      batch_1 =
+        build_conversation([
+          {"user", "Tell me about Elixir"},
+          {"assistant", "Elixir is a functional language on the BEAM VM."}
+        ])
 
-      batch_2 = build_conversation([
-        {"user", "How about deployment?"},
-        {"assistant", "Docker on AWS is a great approach."}
-      ])
+      batch_2 =
+        build_conversation([
+          {"user", "How about deployment?"},
+          {"assistant", "Docker on AWS is a great approach."}
+        ])
 
       Compactor.compact(session_id, batch_1)
       Compactor.flush(session_id)
@@ -172,11 +187,15 @@ defmodule Traitee.Memory.CompactionPipelineTest do
       assert length(summaries) == 2
     end
 
-    test "vector embeddings are stored for semantic retrieval", %{session_id: session_id, fake_embedding: expected_emb} do
-      messages = build_conversation([
-        {"user", "What is GenServer?"},
-        {"assistant", "GenServer is an OTP behaviour for stateful processes."}
-      ])
+    test "vector embeddings are stored for semantic retrieval", %{
+      session_id: session_id,
+      fake_embedding: expected_emb
+    } do
+      messages =
+        build_conversation([
+          {"user", "What is GenServer?"},
+          {"assistant", "GenServer is an OTP behaviour for stateful processes."}
+        ])
 
       Compactor.compact(session_id, messages)
       Compactor.flush(session_id)
@@ -186,6 +205,7 @@ defmodule Traitee.Memory.CompactionPipelineTest do
       summary = hd(MTM.get_summaries(session_id))
 
       Process.sleep(200)
+
       case Vector.get_embedding(:summary, summary.id) do
         {:ok, stored_emb} ->
           assert length(stored_emb) == 384
@@ -198,15 +218,17 @@ defmodule Traitee.Memory.CompactionPipelineTest do
 
     test "entity mention counts accumulate across compaction rounds", %{session_id: session_id} do
       for round <- 1..3 do
-        messages = build_conversation([
-          {"user", "Let's talk about Elixir"},
-          {"assistant", "Sure, Elixir is great."}
-        ])
+        messages =
+          build_conversation([
+            {"user", "Let's talk about Elixir"},
+            {"assistant", "Sure, Elixir is great."}
+          ])
 
         Compactor.compact(session_id, messages)
         Compactor.flush(session_id)
 
         wait_for(fn -> MTM.count(session_id) >= round end)
+
         wait_for(fn ->
           e = LTM.get_entity_by_name("Elixir", "technology")
           e != nil and e.mention_count >= round

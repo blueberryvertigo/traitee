@@ -28,9 +28,11 @@ defmodule Traitee.Config.Validator do
   @spec warnings(map()) :: [String.t()]
   def warnings(config) do
     []
-    |> warn_if(missing_key?(config, [:channels, :discord, :token]) &&
-                 missing_key?(config, [:channels, :telegram, :token]),
-               "No channel tokens configured — bot won't receive messages")
+    |> warn_if(
+      missing_key?(config, [:channels, :discord, :token]) &&
+        missing_key?(config, [:channels, :telegram, :token]),
+      "No channel tokens configured — bot won't receive messages"
+    )
     |> warn_if(missing_key?(config, [:agent, :model]), "No LLM model configured")
     |> Enum.reverse()
   end
@@ -113,9 +115,14 @@ defmodule Traitee.Config.Validator do
 
   defp validate_tools(errors, tools) do
     Enum.reduce(tools, errors, fn
-      {_name, %{enabled: enabled}}, acc when is_boolean(enabled) -> acc
-      {name, %{enabled: val}}, acc -> ["tools.#{name}.enabled must be boolean, got: #{inspect(val)}" | acc]
-      _, acc -> acc
+      {_name, %{enabled: enabled}}, acc when is_boolean(enabled) ->
+        acc
+
+      {name, %{enabled: val}}, acc ->
+        ["tools.#{name}.enabled must be boolean, got: #{inspect(val)}" | acc]
+
+      _, acc ->
+        acc
     end)
   end
 

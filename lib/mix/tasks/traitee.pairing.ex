@@ -39,6 +39,7 @@ defmodule Mix.Tasks.Traitee.Pairing do
       ["list"] ->
         approved = load_approved()
         IO.puts("Approved senders (#{length(approved)}):")
+
         if approved == [] do
           IO.puts("  (none)")
         else
@@ -77,7 +78,9 @@ defmodule Mix.Tasks.Traitee.Pairing do
           {:ok, list} when is_list(list) -> list
           _ -> []
         end
-      {:error, _} -> []
+
+      {:error, _} ->
+        []
     end
   end
 

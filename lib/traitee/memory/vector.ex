@@ -211,7 +211,7 @@ defmodule Traitee.Memory.Vector do
     end)
   end
 
-  defp decode_embedding(nil), do: {:error, :nil}
+  defp decode_embedding(nil), do: {:error, nil}
 
   defp decode_embedding(binary) when is_binary(binary) do
     try do

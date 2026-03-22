@@ -131,7 +131,10 @@ defmodule Traitee.Hooks.Builtin do
       if all_threats != [] do
         ThreatTracker.record_all(sid, all_threats)
         max_sev = Sanitizer.max_severity(all_threats)
-        Logger.warning("[#{sid}] cognitive: #{length(all_threats)} threat(s) detected, max_severity=#{max_sev}")
+
+        Logger.warning(
+          "[#{sid}] cognitive: #{length(all_threats)} threat(s) detected, max_severity=#{max_sev}"
+        )
 
         level = ThreatTracker.threat_level(sid)
 
@@ -139,7 +142,8 @@ defmodule Traitee.Hooks.Builtin do
           Logger.error("[#{sid}] cognitive: session threat level CRITICAL")
         end
 
-        {:ok, Map.merge(ctx, %{threats: all_threats, threat_level: level, has_recent_threats: true})}
+        {:ok,
+         Map.merge(ctx, %{threats: all_threats, threat_level: level, has_recent_threats: true})}
       else
         {:ok, Map.put(ctx, :has_recent_threats, false)}
       end

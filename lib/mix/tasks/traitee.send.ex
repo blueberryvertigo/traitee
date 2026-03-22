@@ -60,10 +60,18 @@ defmodule Mix.Tasks.Traitee.Send do
 
     module =
       case channel do
-        "discord" -> Traitee.Channels.Discord
-        "telegram" -> Traitee.Channels.Telegram
-        "whatsapp" -> Traitee.Channels.WhatsApp
-        "signal" -> Traitee.Channels.Signal
+        "discord" ->
+          Traitee.Channels.Discord
+
+        "telegram" ->
+          Traitee.Channels.Telegram
+
+        "whatsapp" ->
+          Traitee.Channels.WhatsApp
+
+        "signal" ->
+          Traitee.Channels.Signal
+
         _ ->
           Mix.shell().error("Unknown channel: #{channel}")
           System.halt(1)

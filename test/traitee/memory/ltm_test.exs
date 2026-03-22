@@ -155,7 +155,10 @@ defmodule Traitee.Memory.LTMTest do
   describe "add_fact/4" do
     test "creates a fact linked to an entity" do
       {:ok, entity} = LTM.upsert_entity("FactTarget", "concept")
-      assert {:ok, fact} = LTM.add_fact(entity.id, "Elixir compiles to BEAM bytecode", "extracted")
+
+      assert {:ok, fact} =
+               LTM.add_fact(entity.id, "Elixir compiles to BEAM bytecode", "extracted")
+
       assert fact.entity_id == entity.id
       assert fact.content == "Elixir compiles to BEAM bytecode"
       assert fact.fact_type == "extracted"

@@ -17,7 +17,13 @@ defmodule Traitee.Security.ThreatTrackerTest do
   end
 
   test "records threats and increases score", %{session: session} do
-    threat = %Threat{category: :instruction_override, severity: :critical, pattern_name: "test", matched_text: "test"}
+    threat = %Threat{
+      category: :instruction_override,
+      severity: :critical,
+      pattern_name: "test",
+      matched_text: "test"
+    }
+
     ThreatTracker.record(session, threat)
 
     assert ThreatTracker.threat_score(session) > 0
@@ -25,7 +31,12 @@ defmodule Traitee.Security.ThreatTrackerTest do
   end
 
   test "critical threats push level to high or critical", %{session: session} do
-    threat = %Threat{category: :instruction_override, severity: :critical, pattern_name: "test", matched_text: "test"}
+    threat = %Threat{
+      category: :instruction_override,
+      severity: :critical,
+      pattern_name: "test",
+      matched_text: "test"
+    }
 
     ThreatTracker.record(session, threat)
     ThreatTracker.record(session, threat)
@@ -35,7 +46,13 @@ defmodule Traitee.Security.ThreatTrackerTest do
   end
 
   test "tracks categories seen", %{session: session} do
-    t1 = %Threat{category: :instruction_override, severity: :critical, pattern_name: "a", matched_text: "a"}
+    t1 = %Threat{
+      category: :instruction_override,
+      severity: :critical,
+      pattern_name: "a",
+      matched_text: "a"
+    }
+
     t2 = %Threat{category: :role_hijack, severity: :high, pattern_name: "b", matched_text: "b"}
 
     ThreatTracker.record(session, t1)
@@ -47,7 +64,13 @@ defmodule Traitee.Security.ThreatTrackerTest do
   end
 
   test "clear resets session", %{session: session} do
-    threat = %Threat{category: :tag_injection, severity: :high, pattern_name: "test", matched_text: "test"}
+    threat = %Threat{
+      category: :tag_injection,
+      severity: :high,
+      pattern_name: "test",
+      matched_text: "test"
+    }
+
     ThreatTracker.record(session, threat)
     ThreatTracker.clear(session)
 
@@ -56,7 +79,13 @@ defmodule Traitee.Security.ThreatTrackerTest do
   end
 
   test "summary returns formatted string", %{session: session} do
-    threat = %Threat{category: :encoding_evasion, severity: :low, pattern_name: "test", matched_text: "test"}
+    threat = %Threat{
+      category: :encoding_evasion,
+      severity: :low,
+      pattern_name: "test",
+      matched_text: "test"
+    }
+
     ThreatTracker.record(session, threat)
 
     summary = ThreatTracker.summary(session)

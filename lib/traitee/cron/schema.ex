@@ -23,9 +23,19 @@ defmodule Traitee.Cron.Schema do
   def changeset(job, attrs) do
     job
     |> cast(attrs, [
-      :name, :job_type, :schedule, :payload, :channel, :target,
-      :enabled, :last_run_at, :next_run_at, :run_count,
-      :consecutive_errors, :last_error, :metadata
+      :name,
+      :job_type,
+      :schedule,
+      :payload,
+      :channel,
+      :target,
+      :enabled,
+      :last_run_at,
+      :next_run_at,
+      :run_count,
+      :consecutive_errors,
+      :last_error,
+      :metadata
     ])
     |> validate_required([:name, :job_type, :schedule])
     |> validate_inclusion(:job_type, ["at", "every", "cron"])

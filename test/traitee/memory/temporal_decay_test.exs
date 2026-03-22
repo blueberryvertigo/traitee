@@ -77,7 +77,16 @@ defmodule Traitee.Memory.TemporalDecayTest do
     end
 
     test "preserves all item fields" do
-      items = [%{score: 1.0, timestamp: DateTime.utc_now(), id: :test, content: "hello", source: :summary}]
+      items = [
+        %{
+          score: 1.0,
+          timestamp: DateTime.utc_now(),
+          id: :test,
+          content: "hello",
+          source: :summary
+        }
+      ]
+
       result = TemporalDecay.apply(items)
       item = hd(result)
       assert item.id == :test

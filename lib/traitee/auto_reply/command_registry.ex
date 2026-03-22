@@ -11,19 +11,84 @@ defmodule Traitee.AutoReply.CommandRegistry do
         }
 
   @builtin_commands %{
-    "new" => %{handler: :cmd_new, description: "Reset conversation", requires_owner: false, hidden: false},
-    "reset" => %{handler: :cmd_new, description: "Reset conversation (alias)", requires_owner: false, hidden: true},
-    "model" => %{handler: :cmd_model, description: "Switch model — /model <name>", requires_owner: false, hidden: false},
-    "think" => %{handler: :cmd_think, description: "Set thinking level — /think off|low|medium|high", requires_owner: false, hidden: false},
-    "verbose" => %{handler: :cmd_verbose, description: "Toggle verbose — /verbose on|off", requires_owner: false, hidden: false},
-    "usage" => %{handler: :cmd_usage, description: "Token usage — /usage [off|tokens|full]", requires_owner: false, hidden: false},
-    "status" => %{handler: :cmd_status, description: "Session + system status", requires_owner: false, hidden: false},
-    "memory" => %{handler: :cmd_memory, description: "Memory ops — /memory [stats|search <q>|entities]", requires_owner: false, hidden: false},
-    "compact" => %{handler: :cmd_compact, description: "Force compaction", requires_owner: false, hidden: false},
-    "help" => %{handler: :cmd_help, description: "List commands", requires_owner: false, hidden: false},
-    "doctor" => %{handler: :cmd_doctor, description: "Run diagnostics", requires_owner: true, hidden: false},
-    "cron" => %{handler: :cmd_cron, description: "Cron management — /cron [list|add|remove]", requires_owner: true, hidden: false},
-    "pairing" => %{handler: :cmd_pairing, description: "Pairing — /pairing [approve|revoke|list]", requires_owner: true, hidden: false}
+    "new" => %{
+      handler: :cmd_new,
+      description: "Reset conversation",
+      requires_owner: false,
+      hidden: false
+    },
+    "reset" => %{
+      handler: :cmd_new,
+      description: "Reset conversation (alias)",
+      requires_owner: false,
+      hidden: true
+    },
+    "model" => %{
+      handler: :cmd_model,
+      description: "Switch model — /model <name>",
+      requires_owner: false,
+      hidden: false
+    },
+    "think" => %{
+      handler: :cmd_think,
+      description: "Set thinking level — /think off|low|medium|high",
+      requires_owner: false,
+      hidden: false
+    },
+    "verbose" => %{
+      handler: :cmd_verbose,
+      description: "Toggle verbose — /verbose on|off",
+      requires_owner: false,
+      hidden: false
+    },
+    "usage" => %{
+      handler: :cmd_usage,
+      description: "Token usage — /usage [off|tokens|full]",
+      requires_owner: false,
+      hidden: false
+    },
+    "status" => %{
+      handler: :cmd_status,
+      description: "Session + system status",
+      requires_owner: false,
+      hidden: false
+    },
+    "memory" => %{
+      handler: :cmd_memory,
+      description: "Memory ops — /memory [stats|search <q>|entities]",
+      requires_owner: false,
+      hidden: false
+    },
+    "compact" => %{
+      handler: :cmd_compact,
+      description: "Force compaction",
+      requires_owner: false,
+      hidden: false
+    },
+    "help" => %{
+      handler: :cmd_help,
+      description: "List commands",
+      requires_owner: false,
+      hidden: false
+    },
+    "doctor" => %{
+      handler: :cmd_doctor,
+      description: "Run diagnostics",
+      requires_owner: true,
+      hidden: false
+    },
+    "cron" => %{
+      handler: :cmd_cron,
+      description: "Cron management — /cron [list|add|remove]",
+      requires_owner: true,
+      hidden: false
+    },
+    "pairing" => %{
+      handler: :cmd_pairing,
+      description: "Pairing — /pairing [approve|revoke|list]",
+      requires_owner: true,
+      hidden: false
+    }
   }
 
   @spec execute(String.t(), map()) :: {:ok, String.t()} | {:error, term()}
@@ -194,8 +259,11 @@ defmodule Traitee.AutoReply.CommandRegistry do
     }
 
     case Traitee.Cron.Scheduler.add_job(attrs) do
-      {:ok, job} -> {:ok, "Job '#{job.name}' added (#{job_type}, next: #{job.next_run_at || "now"})"}
-      {:error, changeset} -> {:ok, "Error: #{inspect(changeset.errors)}"}
+      {:ok, job} ->
+        {:ok, "Job '#{job.name}' added (#{job_type}, next: #{job.next_run_at || "now"})"}
+
+      {:error, changeset} ->
+        {:ok, "Error: #{inspect(changeset.errors)}"}
     end
   end
 
@@ -228,7 +296,8 @@ defmodule Traitee.AutoReply.CommandRegistry do
   end
 
   def cmd_cron(_, _ctx) do
-    {:ok, "Usage: /cron [list|add <name> <schedule> <msg>|remove <name>|run <name>|pause <name>|resume <name>]"}
+    {:ok,
+     "Usage: /cron [list|add <name> <schedule> <msg>|remove <name>|run <name>|pause <name>|resume <name>]"}
   end
 
   defp cron_detect_type(schedule) do
@@ -257,31 +326,46 @@ defmodule Traitee.AutoReply.CommandRegistry do
     pending = Traitee.Security.Pairing.list_pending()
 
     approved_text =
-      if approved == [], do: "  (none)",
-        else: Enum.map_join(approved, "\n", fn key ->
-          case String.split(key, ":", parts: 2) do
-            [ch, id] -> "  #{id} [#{ch}]"
-            _ -> "  #{key}"
-          end
-        end)
+      if approved == [],
+        do: "  (none)",
+        else:
+          Enum.map_join(approved, "\n", fn key ->
+            case String.split(key, ":", parts: 2) do
+              [ch, id] -> "  #{id} [#{ch}]"
+              _ -> "  #{key}"
+            end
+          end)
 
     pending_text =
-      if pending == [], do: "  (none)",
-        else: Enum.map_join(pending, "\n", fn p -> "  #{p.sender_id} [#{p.channel}] code: #{p.code}" end)
+      if pending == [],
+        do: "  (none)",
+        else:
+          Enum.map_join(pending, "\n", fn p ->
+            "  #{p.sender_id} [#{p.channel}] code: #{p.code}"
+          end)
 
-    {:ok, "Approved (#{length(approved)}):\n#{approved_text}\nPending (#{length(pending)}):\n#{pending_text}"}
+    {:ok,
+     "Approved (#{length(approved)}):\n#{approved_text}\nPending (#{length(pending)}):\n#{pending_text}"}
   end
 
-  def cmd_pairing(_, _ctx), do: {:ok, "Usage: /pairing [list|approve <code>|revoke <channel> <id>]"}
+  def cmd_pairing(_, _ctx),
+    do: {:ok, "Usage: /pairing [list|approve <code>|revoke <channel> <id>]"}
 
   # -- Helpers --
 
   defp build_session_id(%{sender_id: sid, channel_type: ch}) do
-    Traitee.Routing.AgentRouter.build_session_key("default", %{sender_id: sid, channel_type: ch}, :per_peer)
+    Traitee.Routing.AgentRouter.build_session_key(
+      "default",
+      %{sender_id: sid, channel_type: ch},
+      :per_peer
+    )
   end
 
   defp build_session_id(%{sender_id: sid}) do
-    Traitee.Routing.AgentRouter.build_session_key("default", %{sender_id: sid, channel_type: nil}, :per_peer)
+    Traitee.Routing.AgentRouter.build_session_key(
+      "default",
+      %{sender_id: sid, channel_type: nil},
+      :per_peer
+    )
   end
-
 end

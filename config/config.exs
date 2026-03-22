@@ -3,8 +3,7 @@ import Config
 config :traitee,
   ecto_repos: [Traitee.Repo]
 
-config :traitee, Traitee.Repo,
-  database: Path.expand("~/.traitee/traitee.db")
+config :traitee, Traitee.Repo, database: Path.expand("~/.traitee/traitee.db")
 
 config :traitee, TraiteeWeb.Endpoint,
   url: [host: "localhost"],

@@ -86,15 +86,16 @@ defmodule Traitee.Channels.WhatsApp do
               sender_name =
                 if contact, do: get_in(contact, ["profile", "name"]), else: nil
 
-              inbound = Channel.build_inbound(
-                text,
-                from,
-                :whatsapp,
-                sender_name: sender_name,
-                channel_id: from,
-                reply_to: from,
-                metadata: %{message_id: msg["id"], timestamp: msg["timestamp"]}
-              )
+              inbound =
+                Channel.build_inbound(
+                  text,
+                  from,
+                  :whatsapp,
+                  sender_name: sender_name,
+                  channel_id: from,
+                  reply_to: from,
+                  metadata: %{message_id: msg["id"], timestamp: msg["timestamp"]}
+                )
 
               Task.start(fn -> MessageRouter.route(inbound) end)
             end

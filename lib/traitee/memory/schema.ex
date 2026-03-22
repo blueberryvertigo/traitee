@@ -43,8 +43,16 @@ defmodule Traitee.Memory.Schema do
 
     def changeset(summary, attrs) do
       summary
-      |> cast(attrs, [:session_id, :content, :message_range_start, :message_range_end,
-                       :message_count, :embedding, :key_topics, :metadata])
+      |> cast(attrs, [
+        :session_id,
+        :content,
+        :message_range_start,
+        :message_range_end,
+        :message_count,
+        :embedding,
+        :key_topics,
+        :metadata
+      ])
       |> validate_required([:session_id, :content, :message_count])
     end
   end
@@ -87,8 +95,14 @@ defmodule Traitee.Memory.Schema do
 
     def changeset(relation, attrs) do
       relation
-      |> cast(attrs, [:source_entity_id, :target_entity_id, :relation_type,
-                       :description, :strength, :metadata])
+      |> cast(attrs, [
+        :source_entity_id,
+        :target_entity_id,
+        :relation_type,
+        :description,
+        :strength,
+        :metadata
+      ])
       |> validate_required([:source_entity_id, :target_entity_id, :relation_type])
     end
   end
@@ -110,8 +124,15 @@ defmodule Traitee.Memory.Schema do
 
     def changeset(fact, attrs) do
       fact
-      |> cast(attrs, [:entity_id, :content, :fact_type, :confidence,
-                       :source_summary_id, :embedding, :metadata])
+      |> cast(attrs, [
+        :entity_id,
+        :content,
+        :fact_type,
+        :confidence,
+        :source_summary_id,
+        :embedding,
+        :metadata
+      ])
       |> validate_required([:content, :fact_type])
     end
   end

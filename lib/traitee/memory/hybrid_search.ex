@@ -58,22 +58,40 @@ defmodule Traitee.Memory.HybridSearch do
     summaries =
       MTM.search(session_id, query)
       |> Enum.map(fn s ->
-        %{source: :summary, id: s.id, score: 1.0, content: s.content,
-          timestamp: s.inserted_at, embedding: nil}
+        %{
+          source: :summary,
+          id: s.id,
+          score: 1.0,
+          content: s.content,
+          timestamp: s.inserted_at,
+          embedding: nil
+        }
       end)
 
     facts =
       LTM.search_facts(query)
       |> Enum.map(fn f ->
-        %{source: :fact, id: f.id, score: f.confidence || 1.0, content: f.content,
-          timestamp: f.inserted_at, embedding: nil}
+        %{
+          source: :fact,
+          id: f.id,
+          score: f.confidence || 1.0,
+          content: f.content,
+          timestamp: f.inserted_at,
+          embedding: nil
+        }
       end)
 
     entities =
       LTM.search_entities(query)
       |> Enum.map(fn e ->
-        %{source: :entity, id: e.id, score: (e.mention_count || 1) / 10.0,
-          content: "#{e.name}: #{e.description}", timestamp: e.updated_at, embedding: nil}
+        %{
+          source: :entity,
+          id: e.id,
+          score: (e.mention_count || 1) / 10.0,
+          content: "#{e.name}: #{e.description}",
+          timestamp: e.updated_at,
+          embedding: nil
+        }
       end)
 
     summaries ++ facts ++ entities

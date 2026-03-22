@@ -59,8 +59,11 @@ defmodule Traitee.LLM.Ollama do
           case Jason.decode(data) do
             {:ok, %{"message" => %{"content" => text}}} when text != "" ->
               callback.(text)
-            _ -> :ok
+
+            _ ->
+              :ok
           end
+
           {:cont, acc}
         end
       )
@@ -77,7 +80,11 @@ defmodule Traitee.LLM.Ollama do
       Enum.map(texts, fn text ->
         body = %{model: embedding_model(), prompt: text}
 
-        case Req.post(base_url() <> "/api/embeddings", json: body, receive_timeout: 30_000, retry: false) do
+        case Req.post(base_url() <> "/api/embeddings",
+               json: body,
+               receive_timeout: 30_000,
+               retry: false
+             ) do
           {:ok, %{status: 200, body: %{"embedding" => embedding}}} -> {:ok, embedding}
           other -> {:error, other}
         end

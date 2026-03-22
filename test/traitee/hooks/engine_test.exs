@@ -4,9 +4,17 @@ defmodule Traitee.Hooks.EngineTest do
   alias Traitee.Hooks.Engine
 
   setup do
-    for hook_point <- [:before_message, :after_message, :before_tool, :after_tool,
-                       :on_error, :on_session_start, :on_session_end, :on_compaction,
-                       :on_config_change] do
+    for hook_point <- [
+          :before_message,
+          :after_message,
+          :before_tool,
+          :after_tool,
+          :on_error,
+          :on_session_start,
+          :on_session_end,
+          :on_compaction,
+          :on_config_change
+        ] do
       for {name, _} <- Engine.list(hook_point) do
         Engine.unregister(hook_point, name)
       end

@@ -98,7 +98,7 @@ defmodule Traitee.Config.HotReload do
   end
 
   defp diff_config(old, new) when is_map(old) and is_map(new) do
-    all_keys = Map.keys(old) ++ Map.keys(new) |> Enum.uniq()
+    all_keys = (Map.keys(old) ++ Map.keys(new)) |> Enum.uniq()
 
     Enum.reduce(all_keys, %{}, fn key, acc ->
       old_val = Map.get(old, key)

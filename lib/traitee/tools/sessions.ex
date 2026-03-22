@@ -94,11 +94,20 @@ defmodule Traitee.Tools.Sessions do
     from = args["from_session_id"] || "system"
 
     case InterSession.send_to_session(from, sid, msg) do
-      :ok -> {:ok, "Message sent to session #{sid}."}
-      {:ok, _response} -> {:ok, "Message sent to session #{sid}."}
-      {:error, :session_not_found} -> {:error, "Session #{sid} not found."}
-      {:error, :cannot_message_own_session} -> {:error, "Cannot send a message to the current session."}
-      {:error, reason} -> {:error, "Failed to send: #{inspect(reason)}"}
+      :ok ->
+        {:ok, "Message sent to session #{sid}."}
+
+      {:ok, _response} ->
+        {:ok, "Message sent to session #{sid}."}
+
+      {:error, :session_not_found} ->
+        {:error, "Session #{sid} not found."}
+
+      {:error, :cannot_message_own_session} ->
+        {:error, "Cannot send a message to the current session."}
+
+      {:error, reason} ->
+        {:error, "Failed to send: #{inspect(reason)}"}
     end
   end
 

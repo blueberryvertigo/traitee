@@ -14,24 +14,44 @@ defmodule Traitee.LLM.Anthropic do
 
   @models %{
     "claude-opus-4.6" => %ModelInfo{
-      id: "claude-opus-4-6", provider: :anthropic, context_window: 200_000,
-      max_output_tokens: 16_000, cost_per_1k_input: 0.005,
-      cost_per_1k_output: 0.025, supports_tools: true, supports_vision: true
+      id: "claude-opus-4-6",
+      provider: :anthropic,
+      context_window: 200_000,
+      max_output_tokens: 16_000,
+      cost_per_1k_input: 0.005,
+      cost_per_1k_output: 0.025,
+      supports_tools: true,
+      supports_vision: true
     },
     "claude-sonnet-4" => %ModelInfo{
-      id: "claude-sonnet-4-20250514", provider: :anthropic, context_window: 200_000,
-      max_output_tokens: 16_384, cost_per_1k_input: 0.003,
-      cost_per_1k_output: 0.015, supports_tools: true, supports_vision: true
+      id: "claude-sonnet-4-20250514",
+      provider: :anthropic,
+      context_window: 200_000,
+      max_output_tokens: 16_384,
+      cost_per_1k_input: 0.003,
+      cost_per_1k_output: 0.015,
+      supports_tools: true,
+      supports_vision: true
     },
     "claude-opus-4" => %ModelInfo{
-      id: "claude-opus-4-20250514", provider: :anthropic, context_window: 200_000,
-      max_output_tokens: 32_000, cost_per_1k_input: 0.015,
-      cost_per_1k_output: 0.075, supports_tools: true, supports_vision: true
+      id: "claude-opus-4-20250514",
+      provider: :anthropic,
+      context_window: 200_000,
+      max_output_tokens: 32_000,
+      cost_per_1k_input: 0.015,
+      cost_per_1k_output: 0.075,
+      supports_tools: true,
+      supports_vision: true
     },
     "claude-haiku-3.5" => %ModelInfo{
-      id: "claude-3-5-haiku-20241022", provider: :anthropic, context_window: 200_000,
-      max_output_tokens: 8_192, cost_per_1k_input: 0.0008,
-      cost_per_1k_output: 0.004, supports_tools: true, supports_vision: true
+      id: "claude-3-5-haiku-20241022",
+      provider: :anthropic,
+      context_window: 200_000,
+      max_output_tokens: 8_192,
+      cost_per_1k_input: 0.0008,
+      cost_per_1k_output: 0.004,
+      supports_tools: true,
+      supports_vision: true
     }
   }
 
@@ -53,8 +73,11 @@ defmodule Traitee.LLM.Anthropic do
       |> merge_consecutive_roles()
 
     body =
-      %{model: model_id, messages: formatted_messages,
-        max_tokens: request.max_tokens || if(thinking?, do: 8192, else: 4096)}
+      %{
+        model: model_id,
+        messages: formatted_messages,
+        max_tokens: request.max_tokens || if(thinking?, do: 8192, else: 4096)
+      }
       |> maybe_put(:system, merged_system)
       |> maybe_put_thinking(thinking?)
       |> maybe_put(if(thinking?, do: :__skip__, else: :temperature), request.temperature)
@@ -80,8 +103,12 @@ defmodule Traitee.LLM.Anthropic do
     thinking? = thinking_model?(request.model)
 
     body =
-      %{model: model_id, messages: Enum.map(messages, &format_message/1),
-        max_tokens: request.max_tokens || if(thinking?, do: 8192, else: 4096), stream: true}
+      %{
+        model: model_id,
+        messages: Enum.map(messages, &format_message/1),
+        max_tokens: request.max_tokens || if(thinking?, do: 8192, else: 4096),
+        stream: true
+      }
       |> maybe_put(:system, merged_system)
       |> maybe_put_thinking(thinking?)
       |> maybe_put(if(thinking?, do: :__skip__, else: :temperature), request.temperature)
@@ -96,15 +123,26 @@ defmodule Traitee.LLM.Anthropic do
             case line do
               "data: " <> json ->
                 case Jason.decode(json) do
-                  {:ok, %{"type" => "content_block_delta", "delta" => %{"type" => "text_delta", "text" => text}}} ->
+                  {:ok,
+                   %{
+                     "type" => "content_block_delta",
+                     "delta" => %{"type" => "text_delta", "text" => text}
+                   }} ->
                     callback.(text)
-                  {:ok, %{"type" => "content_block_delta", "delta" => %{"type" => "thinking_delta"}}} ->
+
+                  {:ok,
+                   %{"type" => "content_block_delta", "delta" => %{"type" => "thinking_delta"}}} ->
                     :ok
-                  _ -> :ok
+
+                  _ ->
+                    :ok
                 end
-              _ -> :ok
+
+              _ ->
+                :ok
             end
           end
+
           {:cont, acc}
         end
       )
@@ -123,9 +161,14 @@ defmodule Traitee.LLM.Anthropic do
   @impl true
   def model_info(model_id) do
     Map.get(@models, model_id, %ModelInfo{
-      id: model_id, provider: :anthropic, context_window: 200_000,
-      max_output_tokens: 8_192, cost_per_1k_input: 0.003,
-      cost_per_1k_output: 0.015, supports_tools: true, supports_vision: true
+      id: model_id,
+      provider: :anthropic,
+      context_window: 200_000,
+      max_output_tokens: 8_192,
+      cost_per_1k_input: 0.003,
+      cost_per_1k_output: 0.015,
+      supports_tools: true,
+      supports_vision: true
     })
   end
 
@@ -137,7 +180,8 @@ defmodule Traitee.LLM.Anthropic do
   defp merge_system(a, b), do: a <> "\n\n" <> b
 
   defp extract_system(messages) do
-    {system_msgs, other_msgs} = Enum.split_with(messages, &(&1[:role] == "system" or &1.role == "system"))
+    {system_msgs, other_msgs} =
+      Enum.split_with(messages, &(&1[:role] == "system" or &1.role == "system"))
 
     system_text =
       case Enum.map(system_msgs, &(&1[:content] || &1.content)) |> Enum.reject(&is_nil/1) do
@@ -167,7 +211,13 @@ defmodule Traitee.LLM.Anthropic do
     cond do
       role == "tool" ->
         tool_call_id = msg[:tool_call_id] || msg["tool_call_id"]
-        %{role: "user", content: [%{type: "tool_result", tool_use_id: tool_call_id, content: to_string(content)}]}
+
+        %{
+          role: "user",
+          content: [
+            %{type: "tool_result", tool_use_id: tool_call_id, content: to_string(content)}
+          ]
+        }
 
       role == "assistant" && is_list(tool_calls) && tool_calls != [] ->
         blocks =
@@ -177,7 +227,13 @@ defmodule Traitee.LLM.Anthropic do
           Enum.map(tool_calls, fn call ->
             func = call["function"] || call[:function] || %{}
             input = parse_tool_input(func["arguments"] || func[:arguments])
-            %{type: "tool_use", id: call["id"] || call[:id], name: func["name"] || func[:name], input: input}
+
+            %{
+              type: "tool_use",
+              id: call["id"] || call[:id],
+              name: func["name"] || func[:name],
+              input: input
+            }
           end)
 
         %{role: "assistant", content: blocks ++ tool_blocks}
@@ -207,11 +263,17 @@ defmodule Traitee.LLM.Anthropic do
       content
       |> Enum.filter(fn block -> block["type"] == "tool_use" end)
       |> case do
-        [] -> nil
-        calls -> Enum.map(calls, fn c ->
-          %{"id" => c["id"], "type" => "function",
-            "function" => %{"name" => c["name"], "arguments" => Jason.encode!(c["input"])}}
-        end)
+        [] ->
+          nil
+
+        calls ->
+          Enum.map(calls, fn c ->
+            %{
+              "id" => c["id"],
+              "type" => "function",
+              "function" => %{"name" => c["name"], "arguments" => Jason.encode!(c["input"])}
+            }
+          end)
       end
 
     %CompletionResponse{
@@ -255,6 +317,7 @@ defmodule Traitee.LLM.Anthropic do
   defp thinking_model?(model_id), do: MapSet.member?(@thinking_models, model_id)
 
   defp maybe_put_thinking(map, false), do: map
+
   defp maybe_put_thinking(map, true) do
     map
     |> Map.put(:thinking, %{type: "adaptive"})
@@ -269,14 +332,17 @@ defmodule Traitee.LLM.Anthropic do
   defp maybe_put_tools(map, []), do: map
 
   defp maybe_put_tools(map, tools) do
-    anthropic_tools = Enum.map(tools, fn tool ->
-      func = tool["function"] || tool[:function]
-      %{
-        name: func["name"] || func[:name],
-        description: func["description"] || func[:description],
-        input_schema: func["parameters"] || func[:parameters]
-      }
-    end)
+    anthropic_tools =
+      Enum.map(tools, fn tool ->
+        func = tool["function"] || tool[:function]
+
+        %{
+          name: func["name"] || func[:name],
+          description: func["description"] || func[:description],
+          input_schema: func["parameters"] || func[:parameters]
+        }
+      end)
+
     Map.put(map, :tools, anthropic_tools)
   end
 

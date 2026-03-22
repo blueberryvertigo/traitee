@@ -82,6 +82,7 @@ defmodule Traitee.Memory.VectorTest do
 
     test "respects k limit" do
       base = List.duplicate(1.0, 8)
+
       for i <- 1..10 do
         emb = List.update_at(base, rem(i, 8), fn v -> v + i * 0.01 end)
         Vector.store(:fact, "klimit_#{i}", emb)

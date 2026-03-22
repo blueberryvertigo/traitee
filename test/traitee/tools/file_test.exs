@@ -33,7 +33,9 @@ defmodule Traitee.Tools.FileTest do
     end
 
     test "returns error for missing file" do
-      result = Traitee.Tools.File.execute(%{"operation" => "read", "path" => "/nonexistent/file.txt"})
+      result =
+        Traitee.Tools.File.execute(%{"operation" => "read", "path" => "/nonexistent/file.txt"})
+
       assert {:error, _} = result
     end
   end
@@ -43,7 +45,13 @@ defmodule Traitee.Tools.FileTest do
       dir = tmp_dir!()
       path = Path.join(dir, "output.txt")
 
-      result = Traitee.Tools.File.execute(%{"operation" => "write", "path" => path, "content" => "written"})
+      result =
+        Traitee.Tools.File.execute(%{
+          "operation" => "write",
+          "path" => path,
+          "content" => "written"
+        })
+
       assert {:ok, _} = result
       assert File.read!(path) == "written"
 
@@ -54,7 +62,13 @@ defmodule Traitee.Tools.FileTest do
       dir = tmp_dir!()
       path = Path.join([dir, "nested", "deep", "file.txt"])
 
-      result = Traitee.Tools.File.execute(%{"operation" => "write", "path" => path, "content" => "nested"})
+      result =
+        Traitee.Tools.File.execute(%{
+          "operation" => "write",
+          "path" => path,
+          "content" => "nested"
+        })
+
       assert {:ok, _} = result
       assert File.exists?(path)
 
@@ -68,7 +82,13 @@ defmodule Traitee.Tools.FileTest do
       path = Path.join(dir, "append.txt")
       File.write!(path, "first\n")
 
-      result = Traitee.Tools.File.execute(%{"operation" => "append", "path" => path, "content" => "second\n"})
+      result =
+        Traitee.Tools.File.execute(%{
+          "operation" => "append",
+          "path" => path,
+          "content" => "second\n"
+        })
+
       assert {:ok, _} = result
       assert File.read!(path) == "first\nsecond\n"
 

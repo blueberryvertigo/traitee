@@ -18,7 +18,9 @@ defmodule Mix.Tasks.Traitee.Serve do
       )
 
     if port = opts[:port] do
-      Application.put_env(:traitee, TraiteeWeb.Endpoint,
+      Application.put_env(
+        :traitee,
+        TraiteeWeb.Endpoint,
         Keyword.merge(
           Application.get_env(:traitee, TraiteeWeb.Endpoint, []),
           http: [port: port]

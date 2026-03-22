@@ -10,8 +10,10 @@ defmodule Traitee.Memory.HybridSearchTest do
     :ets.delete_all_objects(:traitee_vectors)
 
     pid = Ecto.Adapters.SQL.Sandbox.start_owner!(Traitee.Repo, shared: true)
+
     on_exit(fn ->
       Ecto.Adapters.SQL.Sandbox.stop_owner(pid)
+
       if :ets.whereis(:traitee_vectors) != :undefined do
         :ets.delete_all_objects(:traitee_vectors)
       end
@@ -23,7 +25,10 @@ defmodule Traitee.Memory.HybridSearchTest do
   describe "search/3 - keyword path" do
     test "returns keyword matches from MTM summaries" do
       sid = unique_session_id()
-      {:ok, _} = MTM.store_summary(sid, "Discussion about Elixir GenServers and supervision trees")
+
+      {:ok, _} =
+        MTM.store_summary(sid, "Discussion about Elixir GenServers and supervision trees")
+
       {:ok, _} = MTM.store_summary(sid, "Talked about Rust async runtime")
 
       results = HybridSearch.search("Elixir GenServer", sid)
@@ -44,6 +49,7 @@ defmodule Traitee.Memory.HybridSearchTest do
 
       if length(results) > 0 do
         fact_results = Enum.filter(results, &(&1.source == :fact))
+
         if length(fact_results) > 0 do
           assert hd(fact_results).content =~ "Phoenix"
         end

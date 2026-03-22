@@ -62,7 +62,14 @@ defmodule Traitee.Security.Pairing do
 
       true ->
         code = generate_code()
-        entry = %{key: key, sender_id: sender_id, channel: channel_type, timestamp: System.monotonic_time(:millisecond)}
+
+        entry = %{
+          key: key,
+          sender_id: sender_id,
+          channel: channel_type,
+          timestamp: System.monotonic_time(:millisecond)
+        }
+
         pending = Map.put(state.pending, code, entry)
         Logger.info("Pairing code #{code} generated for #{sender_id} on #{channel_type}")
         {:reply, {:pending, code}, %{state | pending: pending}}
@@ -153,7 +160,9 @@ defmodule Traitee.Security.Pairing do
             migrated = migrate_legacy_keys(list)
             if migrated != list, do: persist_approved(MapSet.new(migrated))
             MapSet.new(migrated)
-          _ -> MapSet.new()
+
+          _ ->
+            MapSet.new()
         end
 
       {:error, _} ->

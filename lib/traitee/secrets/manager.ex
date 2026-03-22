@@ -90,7 +90,8 @@ defmodule Traitee.Secrets.Manager do
   def redact(other), do: other
 
   defp secret_present?(provider, key) do
-    env_key = "#{provider |> to_string() |> String.upcase()}_#{key |> to_string() |> String.upcase()}"
+    env_key =
+      "#{provider |> to_string() |> String.upcase()}_#{key |> to_string() |> String.upcase()}"
 
     System.get_env(env_key) != nil or
       CredentialStore.load(provider, to_string(key)) != :not_found or
@@ -108,7 +109,8 @@ defmodule Traitee.Secrets.Manager do
     env_secrets =
       for {provider, keys} <- @credential_matrix,
           key <- keys,
-          env_key = "#{provider |> to_string() |> String.upcase()}_#{key |> to_string() |> String.upcase()}",
+          env_key =
+            "#{provider |> to_string() |> String.upcase()}_#{key |> to_string() |> String.upcase()}",
           val = System.get_env(env_key),
           val != nil,
           do: val

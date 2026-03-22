@@ -10,7 +10,9 @@ defmodule Traitee.Memory.QueryExpansionTest do
     end
 
     test "returns at most 5 queries" do
-      long = "What is the Elixir programming language used for in Phoenix LiveView and Ecto ORM development?"
+      long =
+        "What is the Elixir programming language used for in Phoenix LiveView and Ecto ORM development?"
+
       result = QueryExpansion.expand(long)
       assert length(result) <= 5
     end
@@ -25,7 +27,9 @@ defmodule Traitee.Memory.QueryExpansionTest do
     test "extracts capitalized proper nouns" do
       result = QueryExpansion.expand("What did John Smith say about Project Alpha?")
       combined = Enum.join(result, " ")
-      assert String.contains?(combined, "John Smith") or String.contains?(combined, "Project Alpha")
+
+      assert String.contains?(combined, "John Smith") or
+               String.contains?(combined, "Project Alpha")
     end
 
     test "extracts keywords (filters stop words)" do

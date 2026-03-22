@@ -34,7 +34,8 @@ defmodule Traitee.Skills.Loader do
     end
   end
 
-  def load_resource(skill_name, resource_path) when is_binary(skill_name) and is_binary(resource_path) do
+  def load_resource(skill_name, resource_path)
+      when is_binary(skill_name) and is_binary(resource_path) do
     base = Path.join(skills_dir(), skill_name)
     full = Path.join(base, resource_path)
 
@@ -123,9 +124,11 @@ defmodule Traitee.Skills.Loader do
   end
 
   defp requirement_met?(nil), do: true
+
   defp requirement_met?(executable) when is_binary(executable) do
     System.find_executable(executable) != nil
   end
+
   defp requirement_met?(_), do: true
 
   defp parse_frontmatter(content) do

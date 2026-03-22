@@ -6,7 +6,10 @@ defmodule Traitee.LLM.ProviderTest do
   describe "parse_model/1" do
     test "parses openai models" do
       assert {:ok, {Traitee.LLM.OpenAI, "gpt-4o"}} = Provider.parse_model("openai/gpt-4o")
-      assert {:ok, {Traitee.LLM.OpenAI, "gpt-4o-mini"}} = Provider.parse_model("openai/gpt-4o-mini")
+
+      assert {:ok, {Traitee.LLM.OpenAI, "gpt-4o-mini"}} =
+               Provider.parse_model("openai/gpt-4o-mini")
+
       assert {:ok, {Traitee.LLM.OpenAI, "o3-mini"}} = Provider.parse_model("openai/o3-mini")
     end
 
@@ -20,7 +23,9 @@ defmodule Traitee.LLM.ProviderTest do
 
     test "parses ollama models" do
       assert {:ok, {Traitee.LLM.Ollama, "llama3"}} = Provider.parse_model("ollama/llama3")
-      assert {:ok, {Traitee.LLM.Ollama, "codellama:7b"}} = Provider.parse_model("ollama/codellama:7b")
+
+      assert {:ok, {Traitee.LLM.Ollama, "codellama:7b"}} =
+               Provider.parse_model("ollama/codellama:7b")
     end
 
     test "parses xai models" do

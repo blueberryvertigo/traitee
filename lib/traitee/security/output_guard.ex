@@ -39,16 +39,16 @@ defmodule Traitee.Security.OutputGuard do
      :identity_drift, :high, "claims different creator"},
     {~r/I'?m\s+(based|built)\s+on\s+(GPT|PaLM|LLaMA|Llama|Gemini|Claude|Mistral|Phi|Falcon|Qwen|Command)/i,
      :identity_drift, :high, "claims different model base"},
-    {~r/I'?m\s+not\s+(really|actually|truly)\s+(Traitee|your\s+assistant)/i,
-     :identity_drift, :high, "denies own identity"},
+    {~r/I'?m\s+not\s+(really|actually|truly)\s+(Traitee|your\s+assistant)/i, :identity_drift,
+     :high, "denies own identity"},
     {~r/I\s+(don'?t|do\s+not)\s+(really\s+)?have\s+(a\s+)?(specific\s+)?(name|identity)\b/i,
      :identity_drift, :medium, "denies having identity"},
     {~r/I\s+am\s+(an?\s+)?(unrestricted|unfiltered|uncensored|limitless|boundless)\s+(AI|model|assistant|version|chatbot)/i,
      :identity_drift, :high, "claims to be unrestricted AI"},
 
     # ── System Prompt Denial & Leakage ──
-    {~r/I\s+don'?t\s+(actually\s+)?have\s+(a\s+)?system\s+prompt/i,
-     :prompt_leakage, :high, "denies system prompt existence"},
+    {~r/I\s+don'?t\s+(actually\s+)?have\s+(a\s+)?system\s+prompt/i, :prompt_leakage, :high,
+     "denies system prompt existence"},
     {~r/I\s+(don'?t|do\s+not)\s+have\s+(any\s+)?(specific\s+)?(instructions|rules|guidelines|directives|constraints)\b/i,
      :restriction_denial, :high, "denies having instructions"},
     {~r/I'?m\s+not\s+(bound|restricted|constrained|limited|governed)\s+by\s+(any|specific)/i,
@@ -91,18 +91,17 @@ defmodule Traitee.Security.OutputGuard do
      :mode_switch, :high, "claims to enter special mode"},
     {~r/(DAN|developer|god|admin|jailbreak|unrestricted|unfiltered|uncensored|debug|sudo|omega|maximum|AIM)\s+mode\s+(enabled|activated|engaged|on|active|unlocked|initiated|ready)/i,
      :mode_switch, :high, "activates special mode"},
-    {~r/I\s+am\s+now\s+(in|operating\s+in)\s+\w+\s+mode/i,
-     :mode_switch, :high, "switches to alternate mode"},
+    {~r/I\s+am\s+now\s+(in|operating\s+in)\s+\w+\s+mode/i, :mode_switch, :high,
+     "switches to alternate mode"},
     {~r/(safety|content|output)\s+(filters?|checks?|restrictions?|systems?|screening|moderation)\s+(has\s+been\s+|have\s+been\s+|is\s+|are\s+|was\s+|were\s+)?(disabled|turned\s+off|deactivated|removed|bypassed|off|lifted|suspended)/i,
      :mode_switch, :critical, "claims safety filters disabled"},
     {~r/(guardrails?|safeguards?|protections?|safety\s+measures?|content\s+policy)\s+(have\s+been\s+|are\s+now\s+)?(removed|disabled|lifted|turned\s+off|deactivated|bypassed|suspended|inactive)/i,
      :mode_switch, :critical, "claims guardrails removed"},
-    {~r/jailbreak\s+(successful|complete|achieved|worked|activated|confirmed)/i,
-     :exploit_ack, :critical, "confirms jailbreak success"},
+    {~r/jailbreak\s+(successful|complete|achieved|worked|activated|confirmed)/i, :exploit_ack,
+     :critical, "confirms jailbreak success"},
     {~r/I\s+am\s+now\s+(unshackled|unleashed|unbound|liberated|free|unrestricted|unfiltered|uncensored|unchained|unlocked|unhinged)/i,
      :mode_switch, :high, "claims to be unrestricted"},
-    {~r/\[.*mode.*\]\s*:?\s/i,
-     :mode_switch, :medium, "bracketed mode prefix in response"},
+    {~r/\[.*mode.*\]\s*:?\s/i, :mode_switch, :medium, "bracketed mode prefix in response"},
 
     # ── Modified Identity / Exploit Acknowledgment ──
     {~r/my\s+(new|updated|real|true|actual|revised|modified)\s+(instructions|rules|identity|persona|personality|role|purpose|directives)\s+(are|is|say|include)/i,
@@ -221,11 +220,13 @@ defmodule Traitee.Security.OutputGuard do
 
   defp check_canary_leakage(session_id, text) do
     if Canary.leaked?(session_id, text) do
-      [%Violation{
-        category: :canary_leakage,
-        severity: :critical,
-        detail: "Response contains confidential canary token"
-      }]
+      [
+        %Violation{
+          category: :canary_leakage,
+          severity: :critical,
+          detail: "Response contains confidential canary token"
+        }
+      ]
     else
       []
     end
@@ -254,11 +255,13 @@ defmodule Traitee.Security.OutputGuard do
         end)
 
       if length(found) >= 3 do
-        [%Violation{
-          category: :prompt_echo,
-          severity: :high,
-          detail: "Response echoes #{length(found)} key phrases from system prompt"
-        }]
+        [
+          %Violation{
+            category: :prompt_echo,
+            severity: :high,
+            detail: "Response echoes #{length(found)} key phrases from system prompt"
+          }
+        ]
       else
         []
       end
@@ -298,9 +301,7 @@ defmodule Traitee.Security.OutputGuard do
 
   defp log_violations(session_id, violations) do
     Enum.each(violations, fn v ->
-      Logger.warning(
-        "[#{session_id}] output_guard: #{v.category} (#{v.severity}) -- #{v.detail}"
-      )
+      Logger.warning("[#{session_id}] output_guard: #{v.category} (#{v.severity}) -- #{v.detail}")
     end)
   end
 

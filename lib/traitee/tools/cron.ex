@@ -69,7 +69,9 @@ defmodule Traitee.Tools.Cron do
     end
   end
 
-  def execute(%{"action" => "add", "name" => name, "schedule" => schedule, "message" => message} = args)
+  def execute(
+        %{"action" => "add", "name" => name, "schedule" => schedule, "message" => message} = args
+      )
       when is_binary(name) and is_binary(schedule) and is_binary(message) do
     job_type = detect_type(schedule)
 

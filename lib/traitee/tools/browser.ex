@@ -30,9 +30,18 @@ defmodule Traitee.Tools.Browser do
         "action" => %{
           "type" => "string",
           "enum" => [
-            "navigate", "snapshot", "click", "type", "fill",
-            "screenshot", "evaluate", "get_text", "press_key",
-            "list_tabs", "new_tab", "close_tab"
+            "navigate",
+            "snapshot",
+            "click",
+            "type",
+            "fill",
+            "screenshot",
+            "evaluate",
+            "get_text",
+            "press_key",
+            "list_tabs",
+            "new_tab",
+            "close_tab"
           ],
           "description" => "Browser action to perform"
         },
@@ -250,7 +259,8 @@ defmodule Traitee.Tools.Browser do
   end
 
   def execute(%{"action" => action}) do
-    {:error, "Unknown action: #{action}. Supported: navigate, snapshot, click, type, fill, screenshot, evaluate, get_text, press_key, list_tabs, new_tab, close_tab"}
+    {:error,
+     "Unknown action: #{action}. Supported: navigate, snapshot, click, type, fill, screenshot, evaluate, get_text, press_key, list_tabs, new_tab, close_tab"}
   end
 
   def execute(_), do: {:error, "Missing required parameter: action"}

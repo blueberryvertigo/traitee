@@ -16,14 +16,15 @@ defmodule TraiteeWeb.ChatChannel do
   def handle_in("message", %{"text" => text}, socket) do
     sender_id = socket.assigns.sender_id
 
-    inbound = Channel.build_inbound(
-      text,
-      sender_id,
-      :webchat,
-      channel_id: sender_id,
-      reply_to: sender_id,
-      metadata: %{}
-    )
+    inbound =
+      Channel.build_inbound(
+        text,
+        sender_id,
+        :webchat,
+        channel_id: sender_id,
+        reply_to: sender_id,
+        metadata: %{}
+      )
 
     MessageRouter.route(inbound)
     {:noreply, socket}

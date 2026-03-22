@@ -63,12 +63,13 @@ defmodule Traitee.Channels.Signal do
   def handle_call({:send, %{target: recipient, text: text}}, _from, state) do
     result =
       if state.port do
-        command = Jason.encode!(%{
-          jsonrpc: "2.0",
-          method: "send",
-          params: %{recipient: [recipient], message: text},
-          id: :erlang.unique_integer([:positive])
-        })
+        command =
+          Jason.encode!(%{
+            jsonrpc: "2.0",
+            method: "send",
+            params: %{recipient: [recipient], message: text},
+            id: :erlang.unique_integer([:positive])
+          })
 
         Port.command(state.port, command <> "\n")
         :ok
@@ -162,15 +163,16 @@ defmodule Traitee.Channels.Signal do
     source = envelope["source"]
 
     if data_msg && data_msg["message"] && source do
-      inbound = Channel.build_inbound(
-        data_msg["message"],
-        source,
-        :signal,
-        sender_name: envelope["sourceName"],
-        channel_id: source,
-        reply_to: source,
-        metadata: %{timestamp: data_msg["timestamp"]}
-      )
+      inbound =
+        Channel.build_inbound(
+          data_msg["message"],
+          source,
+          :signal,
+          sender_name: envelope["sourceName"],
+          channel_id: source,
+          reply_to: source,
+          metadata: %{timestamp: data_msg["timestamp"]}
+        )
 
       Task.start(fn -> MessageRouter.route(inbound) end)
     end

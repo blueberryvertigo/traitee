@@ -31,10 +31,16 @@ defmodule Traitee.Memory.SchemaTest do
     end
 
     test "casts optional fields" do
-      cs = Message.changeset(%Message{}, %{
-        session_id: "s", role: "user", content: "hi",
-        channel: "discord", token_count: 42, metadata: %{key: "val"}
-      })
+      cs =
+        Message.changeset(%Message{}, %{
+          session_id: "s",
+          role: "user",
+          content: "hi",
+          channel: "discord",
+          token_count: 42,
+          metadata: %{key: "val"}
+        })
+
       assert cs.valid?
       assert Ecto.Changeset.get_change(cs, :channel) == "discord"
       assert Ecto.Changeset.get_change(cs, :token_count) == 42
@@ -43,9 +49,13 @@ defmodule Traitee.Memory.SchemaTest do
 
   describe "Summary.changeset/2" do
     test "valid changeset" do
-      cs = Summary.changeset(%Summary{}, %{
-        session_id: "s1", content: "Summary text", message_count: 20
-      })
+      cs =
+        Summary.changeset(%Summary{}, %{
+          session_id: "s1",
+          content: "Summary text",
+          message_count: 20
+        })
+
       assert cs.valid?
     end
 
@@ -58,11 +68,16 @@ defmodule Traitee.Memory.SchemaTest do
     end
 
     test "casts optional fields" do
-      cs = Summary.changeset(%Summary{}, %{
-        session_id: "s", content: "text", message_count: 10,
-        message_range_start: 1, message_range_end: 10,
-        key_topics: ["elixir", "otp"]
-      })
+      cs =
+        Summary.changeset(%Summary{}, %{
+          session_id: "s",
+          content: "text",
+          message_count: 10,
+          message_range_start: 1,
+          message_range_end: 10,
+          key_topics: ["elixir", "otp"]
+        })
+
       assert cs.valid?
       assert Ecto.Changeset.get_change(cs, :key_topics) == ["elixir", "otp"]
     end
@@ -89,9 +104,13 @@ defmodule Traitee.Memory.SchemaTest do
 
   describe "Relation.changeset/2" do
     test "valid changeset" do
-      cs = Relation.changeset(%Relation{}, %{
-        source_entity_id: 1, target_entity_id: 2, relation_type: "works_on"
-      })
+      cs =
+        Relation.changeset(%Relation{}, %{
+          source_entity_id: 1,
+          target_entity_id: 2,
+          relation_type: "works_on"
+        })
+
       assert cs.valid?
     end
 

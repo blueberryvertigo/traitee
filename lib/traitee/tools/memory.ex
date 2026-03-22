@@ -29,11 +29,13 @@ defmodule Traitee.Tools.Memory do
         "action" => %{
           "type" => "string",
           "enum" => ["remember", "recall", "list_entities"],
-          "description" => "Action: remember (store a fact), recall (search memories), list_entities (see known entities)"
+          "description" =>
+            "Action: remember (store a fact), recall (search memories), list_entities (see known entities)"
         },
         "entity" => %{
           "type" => "string",
-          "description" => "Entity name (person, project, concept) to associate the fact with. Required for 'remember'."
+          "description" =>
+            "Entity name (person, project, concept) to associate the fact with. Required for 'remember'."
         },
         "entity_type" => %{
           "type" => "string",

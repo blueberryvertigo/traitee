@@ -25,10 +25,11 @@ defmodule Traitee.Context.Engine do
         0
       end
 
-    budget = Budget.allocate(model, system_prompt, current_message,
-      tool_schema_tokens: tool_schema_tokens,
-      mode: opts[:budget_mode] || :normal
-    )
+    budget =
+      Budget.allocate(model, system_prompt, current_message,
+        tool_schema_tokens: tool_schema_tokens,
+        mode: opts[:budget_mode] || :normal
+      )
 
     {skills_section, budget} = assemble_skills_summary(budget)
     {ltm_msgs, budget} = assemble_ltm(session_id, stm_state, current_message, budget)
@@ -44,16 +45,17 @@ defmodule Traitee.Context.Engine do
 
     {reminder_msgs, budget} = assemble_reminders(session_id, budget, opts)
 
-    messages = build_message_list(
-      system_prompt,
-      skills_section,
-      ltm_msgs,
-      mtm_msgs,
-      stm_msgs,
-      tool_msgs,
-      reminder_msgs,
-      current_message
-    )
+    messages =
+      build_message_list(
+        system_prompt,
+        skills_section,
+        ltm_msgs,
+        mtm_msgs,
+        stm_msgs,
+        tool_msgs,
+        reminder_msgs,
+        current_message
+      )
 
     log_budget_summary(budget)
     {messages, budget}
@@ -129,10 +131,12 @@ defmodule Traitee.Context.Engine do
     if summary == "" do
       {nil, Budget.record_usage(budget, :skills, 0)}
     else
-      {text, tokens} = Budget.truncate_to_budget(
-        "[Available Skills]\n#{summary}",
-        budget.skills_budget
-      )
+      {text, tokens} =
+        Budget.truncate_to_budget(
+          "[Available Skills]\n#{summary}",
+          budget.skills_budget
+        )
+
       {text, Budget.record_usage(budget, :skills, tokens)}
     end
   end
@@ -195,10 +199,12 @@ defmodule Traitee.Context.Engine do
     if context_text == "" do
       {[], Budget.record_usage(budget, :ltm, 0)}
     else
-      {text, tokens} = Budget.truncate_to_budget(
-        "[Memory Context]\n#{context_text}",
-        budget.ltm_budget
-      )
+      {text, tokens} =
+        Budget.truncate_to_budget(
+          "[Memory Context]\n#{context_text}",
+          budget.ltm_budget
+        )
+
       msgs = [%{role: "system", content: text}]
       {msgs, Budget.record_usage(budget, :ltm, tokens)}
     end
@@ -236,10 +242,12 @@ defmodule Traitee.Context.Engine do
     else
       text = all_summaries |> Enum.map(& &1.content) |> Enum.join("\n---\n")
 
-      {text, tokens} = Budget.truncate_to_budget(
-        "[Conversation History Summary]\n#{text}",
-        budget.mtm_budget
-      )
+      {text, tokens} =
+        Budget.truncate_to_budget(
+          "[Conversation History Summary]\n#{text}",
+          budget.mtm_budget
+        )
+
       msgs = [%{role: "system", content: text}]
       {msgs, Budget.record_usage(budget, :mtm, tokens)}
     end
@@ -286,10 +294,11 @@ defmodule Traitee.Context.Engine do
 
   defp assemble_reminders(session_id, budget, opts) do
     if Cognitive.enabled?() do
-      reminder_msgs = Cognitive.reminders_for(session_id,
-        message_count: opts[:message_count] || 0,
-        has_recent_threats: opts[:has_recent_threats] || false
-      )
+      reminder_msgs =
+        Cognitive.reminders_for(session_id,
+          message_count: opts[:message_count] || 0,
+          has_recent_threats: opts[:has_recent_threats] || false
+        )
 
       if reminder_msgs == [] do
         {[], Budget.record_usage(budget, :reminders, 0)}
@@ -300,7 +309,9 @@ defmodule Traitee.Context.Engine do
 
         if capped < tokens do
           first = List.first(reminder_msgs)
-          {[first], Budget.record_usage(budget, :reminders, Tokenizer.count_tokens(first.content))}
+
+          {[first],
+           Budget.record_usage(budget, :reminders, Tokenizer.count_tokens(first.content))}
         else
           {reminder_msgs, Budget.record_usage(budget, :reminders, tokens)}
         end
@@ -312,7 +323,16 @@ defmodule Traitee.Context.Engine do
 
   # -- Message list assembly --
 
-  defp build_message_list(system_prompt, skills_section, ltm_msgs, mtm_msgs, stm_msgs, tool_msgs, reminder_msgs, current_msg) do
+  defp build_message_list(
+         system_prompt,
+         skills_section,
+         ltm_msgs,
+         mtm_msgs,
+         stm_msgs,
+         tool_msgs,
+         reminder_msgs,
+         current_msg
+       ) do
     messages = []
 
     sys_content =
@@ -352,6 +372,7 @@ defmodule Traitee.Context.Engine do
           |> Enum.take(3)
           |> Enum.map(fn r -> "- #{r.content}" end)
           |> Enum.join("\n")
+
         parts ++ ["Entities:\n#{text}"]
       else
         parts
@@ -366,6 +387,7 @@ defmodule Traitee.Context.Engine do
           |> Enum.reject(&is_nil/1)
           |> Enum.map(fn c -> "- #{c}" end)
           |> Enum.join("\n")
+
         parts ++ ["Facts:\n#{text}"]
       else
         parts
@@ -379,6 +401,7 @@ defmodule Traitee.Context.Engine do
           |> Enum.map(fn r -> resolve_content(r) end)
           |> Enum.reject(&is_nil/1)
           |> Enum.join("\n---\n")
+
         parts ++ ["Past context:\n#{text}"]
       else
         parts

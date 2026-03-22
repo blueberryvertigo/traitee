@@ -93,7 +93,13 @@ defmodule Traitee.Channels.Streaming do
   end
 
   defp send_final(channel_type, target, text) do
-    outbound = %{text: text, channel_type: channel_type, target: target, reply_to: nil, metadata: %{}}
+    outbound = %{
+      text: text,
+      channel_type: channel_type,
+      target: target,
+      reply_to: nil,
+      metadata: %{}
+    }
 
     case channel_type do
       :discord -> Traitee.Channels.Discord.send_message(outbound)

@@ -74,7 +74,11 @@ defmodule Traitee.Session.InterSession do
             "type" => "object",
             "properties" => %{
               "session_id" => %{"type" => "string", "description" => "Target session ID"},
-              "limit" => %{"type" => "integer", "description" => "Max messages to return", "default" => 20}
+              "limit" => %{
+                "type" => "integer",
+                "description" => "Max messages to return",
+                "default" => 20
+              }
             },
             "required" => ["session_id"]
           }

@@ -43,7 +43,9 @@ defmodule Traitee.Context.Continuity do
         entity_text =
           results.entities
           |> Enum.take(3)
-          |> Enum.map(fn e -> "#{e.name} (#{e.entity_type}): #{e.description || "no description"}" end)
+          |> Enum.map(fn e ->
+            "#{e.name} (#{e.entity_type}): #{e.description || "no description"}"
+          end)
           |> Enum.join("\n")
 
         parts ++ ["Entities:\n#{entity_text}"]
@@ -148,7 +150,9 @@ defmodule Traitee.Context.Continuity do
     case Traitee.Repo.one(from s in Schema.Session, where: s.session_id == ^session_id) do
       nil ->
         %Schema.Session{}
-        |> Schema.Session.changeset(Map.merge(%{session_id: session_id, last_activity: DateTime.utc_now()}, attrs))
+        |> Schema.Session.changeset(
+          Map.merge(%{session_id: session_id, last_activity: DateTime.utc_now()}, attrs)
+        )
         |> Traitee.Repo.insert()
 
       existing ->

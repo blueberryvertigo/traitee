@@ -107,6 +107,7 @@ defmodule Traitee.Session.LifecycleTest do
   describe "setters" do
     test "set_thinking_level/2" do
       lc = Lifecycle.new("s", :cli)
+
       for level <- [:off, :minimal, :low, :medium, :high] do
         updated = Lifecycle.set_thinking_level(lc, level)
         assert updated.thinking_level == level

@@ -83,8 +83,11 @@ defmodule Traitee.Memory.Compactor do
     state = %{state | processing: MapSet.delete(state.processing, session_id)}
 
     case result do
-      :ok -> Logger.debug("Compaction complete for session #{session_id}")
-      {:error, reason} -> Logger.warning("Compaction failed for #{session_id}: #{inspect(reason)}")
+      :ok ->
+        Logger.debug("Compaction complete for session #{session_id}")
+
+      {:error, reason} ->
+        Logger.warning("Compaction failed for #{session_id}: #{inspect(reason)}")
     end
 
     {:noreply, state}

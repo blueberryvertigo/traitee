@@ -9,14 +9,21 @@ defmodule Traitee.Daemon.Windows do
     project_dir = File.cwd!()
     command = "\"#{elixir}\" -S mix traitee.serve"
 
-    schtasks([
-      "/create",
-      "/tn", @task_name,
-      "/tr", command,
-      "/sc", "onlogon",
-      "/rl", "highest",
-      "/f"
-    ], cd: project_dir)
+    schtasks(
+      [
+        "/create",
+        "/tn",
+        @task_name,
+        "/tr",
+        command,
+        "/sc",
+        "onlogon",
+        "/rl",
+        "highest",
+        "/f"
+      ],
+      cd: project_dir
+    )
   end
 
   @spec uninstall() :: :ok | {:error, term()}

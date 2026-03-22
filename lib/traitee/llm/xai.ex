@@ -11,19 +11,34 @@ defmodule Traitee.LLM.XAI do
 
   @models %{
     "grok-4-1-fast-non-reasoning" => %ModelInfo{
-      id: "grok-4-1-fast-non-reasoning", provider: :xai, context_window: 2_000_000,
-      max_output_tokens: 16_384, cost_per_1k_input: 0.0002,
-      cost_per_1k_output: 0.0005, supports_tools: true, supports_vision: true
+      id: "grok-4-1-fast-non-reasoning",
+      provider: :xai,
+      context_window: 2_000_000,
+      max_output_tokens: 16_384,
+      cost_per_1k_input: 0.0002,
+      cost_per_1k_output: 0.0005,
+      supports_tools: true,
+      supports_vision: true
     },
     "grok-4-1-fast-reasoning" => %ModelInfo{
-      id: "grok-4-1-fast-reasoning", provider: :xai, context_window: 2_000_000,
-      max_output_tokens: 16_384, cost_per_1k_input: 0.0002,
-      cost_per_1k_output: 0.0005, supports_tools: true, supports_vision: true
+      id: "grok-4-1-fast-reasoning",
+      provider: :xai,
+      context_window: 2_000_000,
+      max_output_tokens: 16_384,
+      cost_per_1k_input: 0.0002,
+      cost_per_1k_output: 0.0005,
+      supports_tools: true,
+      supports_vision: true
     },
     "grok-4-0709" => %ModelInfo{
-      id: "grok-4-0709", provider: :xai, context_window: 256_000,
-      max_output_tokens: 16_384, cost_per_1k_input: 0.003,
-      cost_per_1k_output: 0.015, supports_tools: true, supports_vision: true
+      id: "grok-4-0709",
+      provider: :xai,
+      context_window: 256_000,
+      max_output_tokens: 16_384,
+      cost_per_1k_input: 0.003,
+      cost_per_1k_output: 0.015,
+      supports_tools: true,
+      supports_vision: true
     }
   }
 
@@ -103,16 +118,23 @@ defmodule Traitee.LLM.XAI do
         into: fn {:data, data}, acc ->
           for line <- String.split(data, "\n", trim: true) do
             case line do
-              "data: [DONE]" -> :ok
+              "data: [DONE]" ->
+                :ok
+
               "data: " <> json ->
                 case Jason.decode(json) do
                   {:ok, %{"choices" => [%{"delta" => %{"content" => c}}]}} when is_binary(c) ->
                     callback.(c)
-                  _ -> :ok
+
+                  _ ->
+                    :ok
                 end
-              _ -> :ok
+
+              _ ->
+                :ok
             end
           end
+
           {:cont, acc}
         end
       )
@@ -131,9 +153,14 @@ defmodule Traitee.LLM.XAI do
   @impl true
   def model_info(model_id) do
     Map.get(@models, model_id, %ModelInfo{
-      id: model_id, provider: :xai, context_window: 131_072,
-      max_output_tokens: 16_384, cost_per_1k_input: 0.0002,
-      cost_per_1k_output: 0.0005, supports_tools: true, supports_vision: false
+      id: model_id,
+      provider: :xai,
+      context_window: 131_072,
+      max_output_tokens: 16_384,
+      cost_per_1k_input: 0.0002,
+      cost_per_1k_output: 0.0005,
+      supports_tools: true,
+      supports_vision: false
     })
   end
 

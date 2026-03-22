@@ -99,9 +99,14 @@ defmodule Mix.Tasks.Traitee.Chat do
     }
 
     case CommandRegistry.execute(input, context) do
-      {:ok, text} -> IO.puts("[system] #{text}")
-      {:error, :unknown_command} -> IO.puts("[system] Unknown command: #{input}. Type /help for commands.")
-      {:error, reason} -> IO.puts("[error] #{inspect(reason)}")
+      {:ok, text} ->
+        IO.puts("[system] #{text}")
+
+      {:error, :unknown_command} ->
+        IO.puts("[system] Unknown command: #{input}. Type /help for commands.")
+
+      {:error, reason} ->
+        IO.puts("[error] #{inspect(reason)}")
     end
 
     {session_id, pid}

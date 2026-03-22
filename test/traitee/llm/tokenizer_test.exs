@@ -12,7 +12,10 @@ defmodule Traitee.LLM.TokenizerTest do
 
     test "longer text has more tokens" do
       short = Tokenizer.count_tokens("hi")
-      long = Tokenizer.count_tokens("This is a significantly longer piece of text with many words")
+
+      long =
+        Tokenizer.count_tokens("This is a significantly longer piece of text with many words")
+
       assert long > short
     end
 

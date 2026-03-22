@@ -126,7 +126,8 @@ defmodule Traitee.Memory.LTM do
 
   defp get_relation(source_id, target_id, type) do
     Relation
-    |> where([r],
+    |> where(
+      [r],
       r.source_entity_id == ^source_id and
         r.target_entity_id == ^target_id and
         r.relation_type == ^type

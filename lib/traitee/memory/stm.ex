@@ -193,9 +193,13 @@ defmodule Traitee.Memory.STM do
         |> Traitee.Repo.insert()
 
       case result do
-        {:ok, _} -> :ok
+        {:ok, _} ->
+          :ok
+
         {:error, changeset} ->
-          Logger.warning("Failed to persist message for #{session_id}: #{inspect(changeset.errors)}")
+          Logger.warning(
+            "Failed to persist message for #{session_id}: #{inspect(changeset.errors)}"
+          )
       end
     end)
   end
@@ -206,7 +210,9 @@ defmodule Traitee.Memory.STM do
 
   defp next_counter(table) do
     case :ets.info(table, :size) do
-      0 -> 0
+      0 ->
+        0
+
       _ ->
         table
         |> :ets.tab2list()
