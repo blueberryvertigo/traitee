@@ -86,16 +86,70 @@ it leans into it.
 
 ## Quick Start
 
+### 1. Install Dependencies
+
+**Windows** (PowerShell as admin):
+```powershell
+winget install ErlangSolutions.Erlang.OTP
+winget install ElixirLang.Elixir
+```
+
+**macOS** (Homebrew):
+```bash
+brew install elixir
+```
+
+**Linux** (Ubuntu/Debian):
+```bash
+sudo apt install erlang elixir
+```
+
+Or use [asdf](https://asdf-vm.com/) on any platform:
+```bash
+asdf plugin add erlang
+asdf plugin add elixir
+asdf install erlang 27.0
+asdf install elixir 1.17.2-otp-27
+```
+
+Verify:
+```bash
+elixir --version   # >= 1.17
+erl -noshell -eval 'io:format("~s~n", [erlang:system_info(otp_release)]), halt().'   # >= 27
+```
+
+### 2. Clone & Setup
+
 ```bash
 git clone https://github.com/blueberryvertigo/traitee.git
 cd traitee
 mix setup
+```
 
-# Set your API key
-set OPENAI_API_KEY=sk-...
+### 3. Configure an LLM Provider
+
+Set at least one API key:
+
+```bash
+# Windows (PowerShell)
+$env:OPENAI_API_KEY = "sk-..."
 # or
-set ANTHROPIC_API_KEY=sk-ant-...
+$env:ANTHROPIC_API_KEY = "sk-ant-..."
 
+# macOS / Linux
+export OPENAI_API_KEY=sk-...
+# or
+export ANTHROPIC_API_KEY=sk-ant-...
+```
+
+Or use a local model with [Ollama](https://ollama.com/) (no API key needed):
+```bash
+ollama pull llama3
+```
+
+### 4. Run
+
+```bash
 # Interactive onboarding (recommended for first run)
 mix traitee.onboard
 
@@ -107,7 +161,7 @@ mix traitee.serve
 ```
 
 Requirements: **Elixir** >= 1.17 / **Erlang/OTP** >= 27, and at least one LLM
-API key (OpenAI, Anthropic, xAI, or local Ollama).
+provider (OpenAI, Anthropic, xAI, or local Ollama).
 
 ---
 
