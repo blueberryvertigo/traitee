@@ -11,14 +11,14 @@ defmodule Traitee.Onboard.Wizard do
   }
 
   @default_models %{
-    openai: "openai/gpt-4o",
-    anthropic: "anthropic/claude-sonnet-4",
+    openai: "openai/gpt-5.4",
+    anthropic: "anthropic/claude-opus-4.6",
     ollama: "ollama/llama3"
   }
 
   @fallback_models %{
-    openai: "anthropic/claude-sonnet-4",
-    anthropic: "openai/gpt-4o",
+    openai: "anthropic/claude-opus-4.6",
+    anthropic: "openai/gpt-5.4",
     ollama: nil
   }
 

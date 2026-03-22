@@ -13,8 +13,8 @@ defmodule Traitee.Config do
 
   @default_config %{
     agent: %{
-      model: "anthropic/claude-sonnet-4",
-      fallback_model: "openai/gpt-4o",
+      model: "anthropic/claude-opus-4.6",
+      fallback_model: "openai/gpt-5.4",
       system_prompt:
         "You are Traitee, a personal AI assistant platform. Be concise, helpful, and personable."
     },
@@ -90,7 +90,7 @@ defmodule Traitee.Config do
   ## Examples
 
       Traitee.Config.get([:agent, :model])
-      #=> "anthropic/claude-sonnet-4"
+      #=> "anthropic/claude-opus-4.6"
 
       Traitee.Config.get([:channels, :discord, :token])
       #=> "bot_token_here"
