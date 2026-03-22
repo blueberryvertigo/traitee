@@ -10,6 +10,7 @@ defmodule Traitee.Application do
     Traitee.Security.RateLimiter.init()
     Traitee.Security.ThreatTracker.init()
     Traitee.Security.Canary.init()
+    Traitee.Security.Filesystem.init()
     Traitee.Memory.Vector.init()
 
     children = [
@@ -21,6 +22,7 @@ defmodule Traitee.Application do
       Traitee.Memory.Compactor,
       Traitee.Memory.BatchEmbedder,
       Traitee.Skills.Registry,
+      Traitee.Security.Audit,
       Traitee.Security.Pairing,
       Traitee.AutoReply.Debouncer,
       Traitee.Cron.Scheduler,

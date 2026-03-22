@@ -49,6 +49,7 @@ defmodule Traitee.Onboard.Wizard do
     |> step_owner_identity()
     |> step_cognitive_security()
     |> step_tools()
+    |> step_filesystem_security()
     |> step_gateway()
     |> step_workspace()
     |> step_test_connection()
@@ -121,6 +122,17 @@ defmodule Traitee.Onboard.Wizard do
       cognitive: %{reminder_interval: 8, canary_enabled: true, output_guard: "redact"},
       tools: %{bash: true, file: true, web_search: false, browser: false, cron: true},
       web_search_key: nil,
+      filesystem: %{
+        sandbox_mode: true,
+        default_policy: "deny",
+        docker_enabled: false,
+        docker_image: "alpine:latest",
+        docker_memory: "256m",
+        docker_network: "none",
+        exec_gate: true,
+        audit: true,
+        allowed_paths: []
+      },
       gateway_port: 4000,
       secret_key_base: nil
     }
@@ -510,6 +522,218 @@ defmodule Traitee.Onboard.Wizard do
     advance(state)
   end
 
+  defp step_filesystem_security(state) do
+    puts(heading(state, "Filesystem Security"))
+
+    puts("""
+    Traitee's tools can read files, write files, and run shell commands.
+    The filesystem security system controls what they're allowed to do.
+
+    #{ANSI.bright()}Three layers of protection:#{ANSI.reset()}
+
+      #{ANSI.cyan()}1. Hardcoded denylists#{ANSI.reset()} (always on, cannot be disabled)
+         Blocks access to .ssh, .aws, .env, credentials, private keys,
+         /proc, /dev, C:\\Windows\\System32, and 30+ other sensitive paths.
+         Blocks dangerous commands: curl|sh pipes, fork bombs, netcat, etc.
+         Scrubs secrets from environment variables passed to tools.
+
+      #{ANSI.cyan()}2. Sandbox mode#{ANSI.reset()} (application-level isolation)
+         Controls what the AI can access beyond the hardcoded denylists.
+         Configurable per-path allow/deny rules with read/write permissions.
+         Exec approval gates warn or block risky commands (rm, sudo, etc.).
+         Jails bash tool to a sandbox working directory.
+
+      #{ANSI.cyan()}3. Docker isolation#{ANSI.reset()} (OS-level isolation, optional)
+         Runs tool commands inside ephemeral Docker containers with:
+         read-only filesystem, no network, memory/CPU limits, PID limits.
+         The strongest protection — requires Docker to be installed.
+    """)
+
+    state = configure_sandbox_mode(state)
+    state = configure_allowed_paths(state)
+    state = configure_docker(state)
+    state = configure_exec_gate(state)
+    state = configure_audit(state)
+
+    print_filesystem_summary(state)
+    advance(state)
+  end
+
+  defp configure_sandbox_mode(state) do
+    puts("  #{ANSI.bright()}Sandbox mode#{ANSI.reset()} sets the default access policy for the AI's tools.")
+    puts("  With sandbox ON, the AI can only access paths you explicitly allow.")
+    puts("  With sandbox OFF, reads are allowed everywhere (writes still blocked).\n")
+
+    sandbox = confirm?("  Enable sandbox mode? (recommended)")
+
+    policy =
+      if sandbox do
+        puts("\n  #{ANSI.bright()}Default policy#{ANSI.reset()} — what happens when a path doesn't match any rule:")
+        puts("    1) deny      — block all access unless explicitly allowed (most secure)")
+        puts("    2) read_only — allow reads, block writes unless explicitly allowed")
+        choice = prompt("    Policy [1]") |> normalize("1")
+        if choice == "2", do: "read_only", else: "deny"
+      else
+        "read_only"
+      end
+
+    puts("#{ANSI.green()}  ✓ Sandbox: #{if sandbox, do: "ON", else: "OFF"}, default policy: #{policy}#{ANSI.reset()}\n")
+
+    fs = %{state.filesystem | sandbox_mode: sandbox, default_policy: policy}
+    %{state | filesystem: fs}
+  end
+
+  defp configure_allowed_paths(state) do
+    needs_allow = state.filesystem.sandbox_mode and state.filesystem.default_policy == "deny"
+
+    if needs_allow do
+      puts("  #{ANSI.bright()}Allowed paths#{ANSI.reset()} — directories the AI can access.")
+      puts("  The Traitee data dir (~/.traitee) is always accessible.\n")
+      prompt_allowed_paths(state)
+    else
+      state
+    end
+  end
+
+  defp prompt_allowed_paths(state) do
+    if confirm?("  Add allowed directories now?") do
+      paths = collect_paths([])
+      print_allowed_paths(paths)
+      fs = %{state.filesystem | allowed_paths: paths}
+      %{state | filesystem: fs}
+    else
+      puts("#{ANSI.yellow()}  No paths added — the AI can only access ~/.traitee/**")
+      puts("  Add later: [[security.filesystem.allow]] in config.toml#{ANSI.reset()}\n")
+      state
+    end
+  end
+
+  defp print_allowed_paths([]), do: :ok
+
+  defp print_allowed_paths(paths) do
+    formatted = Enum.map_join(paths, ", ", fn {p, _} -> p end)
+    puts("#{ANSI.green()}  ✓ Allowed: #{formatted}#{ANSI.reset()}\n")
+  end
+
+  defp collect_paths(acc) do
+    input = prompt("    Directory path (or Enter to finish)") |> String.trim()
+
+    if input == "" do
+      Enum.reverse(acc)
+    else
+      expanded = Path.expand(input)
+      puts("    Permission for #{expanded}:")
+      puts("      1) read + write")
+      puts("      2) read only")
+      perm_choice = prompt("      Permission [1]") |> normalize("1")
+      perms = if perm_choice == "2", do: ["read"], else: ["read", "write"]
+      collect_paths([{expanded, perms} | acc])
+    end
+  end
+
+  defp configure_docker(state) do
+    if state.tools.bash do
+      puts("  #{ANSI.bright()}Docker isolation#{ANSI.reset()} — the strongest protection layer.")
+      puts("  Runs every shell command inside a throwaway Docker container with:")
+      puts("  - Read-only filesystem (can't modify the host)")
+      puts("  - No network access (can't exfiltrate data)")
+      puts("  - Memory/CPU limits (can't resource-bomb your machine)")
+      puts("  - Automatic cleanup (container deleted after each command)")
+      puts("")
+      puts("  #{ANSI.faint()}Requires Docker to be installed and running.#{ANSI.reset()}")
+      puts("  #{ANSI.faint()}Falls back to host execution if Docker is unavailable.#{ANSI.reset()}\n")
+
+      docker = confirm?("  Enable Docker isolation?")
+
+      state =
+        if docker do
+          state = put_in(state.filesystem.docker_enabled, true)
+          maybe_customize_docker(state)
+        else
+          state
+        end
+
+      docker_status = if state.filesystem.docker_enabled, do: "ON", else: "OFF"
+      puts("#{ANSI.green()}  ✓ Docker isolation: #{docker_status}#{ANSI.reset()}\n")
+      state
+    else
+      state
+    end
+  end
+
+  defp maybe_customize_docker(state) do
+    if confirm?("    Customize Docker settings?") do
+      image = prompt("    Base image [alpine:latest]") |> normalize("alpine:latest")
+      memory = prompt("    Memory limit [256m]") |> normalize("256m")
+
+      puts("    Network mode:")
+      puts("      1) none   — no network access (most secure)")
+      puts("      2) bridge — default Docker networking")
+      net_choice = prompt("    Network [1]") |> normalize("1")
+      network = if net_choice == "2", do: "bridge", else: "none"
+
+      fs = %{state.filesystem | docker_image: image, docker_memory: memory, docker_network: network}
+      %{state | filesystem: fs}
+    else
+      state
+    end
+  end
+
+  defp configure_exec_gate(state) do
+    puts("  #{ANSI.bright()}Exec approval gates#{ANSI.reset()} — warn or block risky commands.")
+    puts("  Default rules flag: rm, chmod, git push, curl, wget, docker,")
+    puts("  sudo, npm publish, pip install, and PowerShell policy bypass.\n")
+
+    gate = confirm?("  Enable exec approval gates? (recommended)")
+    puts("#{ANSI.green()}  ✓ Exec gates: #{if gate, do: "ON", else: "OFF"}#{ANSI.reset()}\n")
+
+    fs = %{state.filesystem | exec_gate: gate}
+    %{state | filesystem: fs}
+  end
+
+  defp configure_audit(state) do
+    puts("  #{ANSI.bright()}Security audit trail#{ANSI.reset()} — logs every filesystem access decision.")
+    puts("  Enables `mix traitee.security` to review access patterns and denials.\n")
+
+    audit = confirm?("  Enable audit trail? (recommended)")
+    puts("#{ANSI.green()}  ✓ Audit trail: #{if audit, do: "ON", else: "OFF"}#{ANSI.reset()}\n")
+
+    fs = %{state.filesystem | audit: audit}
+    %{state | filesystem: fs}
+  end
+
+  defp print_filesystem_summary(state) do
+    fs = state.filesystem
+    protection_level = filesystem_protection_level(fs)
+
+    puts("""
+    #{ANSI.bright()}Filesystem security summary:#{ANSI.reset()}
+      Protection:    #{protection_level}
+      Sandbox:       #{if fs.sandbox_mode, do: "ON (#{fs.default_policy})", else: "OFF"}
+      Docker:        #{if fs.docker_enabled, do: "ON (#{fs.docker_image}, network=#{fs.docker_network})", else: "OFF"}
+      Exec gates:    #{if fs.exec_gate, do: "ON", else: "OFF"}
+      Audit trail:   #{if fs.audit, do: "ON", else: "OFF"}
+      Allowed paths: #{if fs.allowed_paths == [], do: "~/.traitee only", else: "#{length(fs.allowed_paths)} configured"}
+      #{ANSI.faint()}Hardcoded denylists are always active regardless of these settings.#{ANSI.reset()}
+    """)
+  end
+
+  defp filesystem_protection_level(fs) do
+    cond do
+      fs.docker_enabled and fs.sandbox_mode and fs.exec_gate ->
+        "#{ANSI.green()}#{ANSI.bright()}MAXIMUM#{ANSI.reset()} — sandbox + Docker + exec gates"
+
+      fs.sandbox_mode and fs.exec_gate ->
+        "#{ANSI.green()}HIGH#{ANSI.reset()} — sandbox + exec gates (no Docker)"
+
+      fs.sandbox_mode ->
+        "#{ANSI.cyan()}MODERATE#{ANSI.reset()} — sandbox only"
+
+      true ->
+        "#{ANSI.yellow()}BASIC#{ANSI.reset()} — hardcoded denylists only"
+    end
+  end
+
   defp step_gateway(state) do
     puts(heading(state, "Gateway"))
     puts("The gateway exposes the HTTP API, webhooks, and WebChat.\n")
@@ -603,7 +827,8 @@ defmodule Traitee.Onboard.Wizard do
       Agent:      #{state.bot_name}
       Channels:   #{if state.channels == [], do: "CLI only", else: Enum.join(state.channels, ", ")}
       Owner:      #{state.owner_id || "(not set)"}
-      Security:   #{if state.judge_enabled, do: "LLM judge + full pipeline", else: "Regex + pipeline (no judge)"}
+      CogSec:     #{if state.judge_enabled, do: "LLM judge + full pipeline", else: "Regex + pipeline (no judge)"}
+      Filesystem: #{summary_filesystem(state.filesystem)}
       Gateway:    http://127.0.0.1:#{state.gateway_port}
 
     #{ANSI.bright()}What's next:#{ANSI.reset()}
@@ -611,6 +836,7 @@ defmodule Traitee.Onboard.Wizard do
       #{ANSI.cyan()}mix traitee.serve#{ANSI.reset()}        Start the gateway server
       #{ANSI.cyan()}mix traitee.daemon start#{ANSI.reset()} Run as background service
       #{ANSI.cyan()}mix traitee.doctor#{ANSI.reset()}       Check system health
+      #{ANSI.cyan()}mix traitee.security#{ANSI.reset()}     Audit filesystem security posture
 
     Config: #{Traitee.config_path()}
     Data:   #{Traitee.data_dir()}
@@ -623,6 +849,19 @@ defmodule Traitee.Onboard.Wizard do
 
   defp fallback_line(%{fallback_model: nil}), do: ""
   defp fallback_line(%{fallback_model: fb}), do: "\n      Fallback:   #{fb}"
+
+  defp summary_filesystem(fs) do
+    parts =
+      [
+        if(fs.sandbox_mode, do: "sandbox(#{fs.default_policy})"),
+        if(fs.docker_enabled, do: "Docker"),
+        if(fs.exec_gate, do: "exec-gates"),
+        if(fs.audit, do: "audit")
+      ]
+      |> Enum.reject(&is_nil/1)
+
+    if parts == [], do: "hardcoded denylists only", else: Enum.join(parts, " + ")
+  end
 
   # -- Config file generation --
 
@@ -810,8 +1049,54 @@ defmodule Traitee.Onboard.Wizard do
       "min_message_length = 10"
     ]
 
-    all_lines = lines ++ channel_id_lines ++ cognitive_lines
+    filesystem_lines = build_filesystem_lines(state.filesystem)
+
+    all_lines = lines ++ channel_id_lines ++ cognitive_lines ++ filesystem_lines
     Enum.join(all_lines, "\n")
+  end
+
+  defp build_filesystem_lines(fs) do
+    lines = [
+      "",
+      "[security.filesystem]",
+      "sandbox_mode = #{fs.sandbox_mode}",
+      ~s(default_policy = "#{fs.default_policy}")
+    ]
+
+    allow_lines =
+      Enum.flat_map(fs.allowed_paths, fn {path, perms} ->
+        perms_toml = Enum.map_join(perms, ", ", &~s("#{&1}"))
+
+        [
+          "",
+          "[[security.filesystem.allow]]",
+          ~s(pattern = "#{escape_toml(path)}/**"),
+          "permissions = [#{perms_toml}]"
+        ]
+      end)
+
+    docker_lines = [
+      "",
+      "[security.filesystem.docker]",
+      "enabled = #{fs.docker_enabled}",
+      ~s(image = "#{fs.docker_image}"),
+      ~s(memory = "#{fs.docker_memory}"),
+      ~s(network = "#{fs.docker_network}")
+    ]
+
+    gate_lines = [
+      "",
+      "[security.filesystem.exec_gate]",
+      "enabled = #{fs.exec_gate}"
+    ]
+
+    audit_lines = [
+      "",
+      "[security.filesystem.audit]",
+      "enabled = #{fs.audit}"
+    ]
+
+    lines ++ allow_lines ++ docker_lines ++ gate_lines ++ audit_lines
   end
 
   defp build_channel_id_lines(ids) when map_size(ids) == 0, do: []

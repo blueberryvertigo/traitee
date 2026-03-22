@@ -1,13 +1,18 @@
 defmodule Traitee.Tools.Bash do
   @moduledoc """
   Shell command execution tool with cross-platform Windows/Unix support.
-  When sandbox mode is enabled, commands are validated against a blocklist,
-  environment variables are scrubbed, and execution is jailed to a working directory.
+
+  All commands are validated through the centralized sandbox — command
+  blocklist, filesystem policy, exec gates, and environment scrubbing
+  are always enforced regardless of sandbox mode. When sandbox mode is
+  active, execution is additionally jailed to a working directory and
+  optionally routed through Docker container isolation.
   """
 
   @behaviour Traitee.Tools.Tool
 
-  alias Traitee.Security.Sandbox
+  alias Traitee.Process.Executor
+  alias Traitee.Security.{Docker, Sandbox}
 
   @max_output 10_000
   @default_timeout 30_000
@@ -44,18 +49,31 @@ defmodule Traitee.Tools.Bash do
 
   @impl true
   def execute(%{"command" => command} = args) do
-    sandboxed? = Sandbox.sandbox_enabled?()
     timeout = args["timeout"] || @default_timeout
+    session_id = args["_session_id"]
 
-    with :ok <- maybe_check_command(command, sandboxed?) do
-      working_dir = resolve_working_dir(args["working_directory"], sandboxed?)
-      env = if sandboxed?, do: Sandbox.scrubbed_env(), else: []
+    with :ok <- Sandbox.check_command(command, tool: "bash", session_id: session_id) do
+      working_dir = resolve_working_dir(args["working_directory"])
+      env = Sandbox.scrubbed_env()
 
-      case Traitee.Process.Executor.run(command,
-             timeout_ms: timeout,
-             working_dir: working_dir,
-             env: env
-           ) do
+      result =
+        if Docker.enabled?() do
+          Docker.run(command,
+            timeout_ms: timeout,
+            working_dir: working_dir,
+            env: env,
+            session_id: session_id
+          )
+          |> docker_fallback(command, timeout, working_dir, env)
+        else
+          Executor.run(command,
+            timeout_ms: timeout,
+            working_dir: working_dir,
+            env: env
+          )
+        end
+
+      case result do
         {:ok, %{stdout: output, exit_code: 0}} ->
           {:ok, truncate(output)}
 
@@ -73,32 +91,43 @@ defmodule Traitee.Tools.Bash do
 
   def execute(_), do: {:error, "Missing required parameter: command"}
 
-  defp maybe_check_command(command, true), do: Sandbox.check_command(command)
-  defp maybe_check_command(_command, false), do: :ok
+  defp docker_fallback({:ok, result}, _cmd, _timeout, _dir, _env), do: {:ok, result}
 
-  defp resolve_working_dir(nil, true) do
-    dir = Sandbox.sandbox_working_dir()
-    File.mkdir_p!(dir)
-    dir
+  defp docker_fallback({:error, {:docker_unavailable, _}}, cmd, timeout, dir, env) do
+    Executor.run(cmd, timeout_ms: timeout, working_dir: dir, env: env)
   end
 
-  defp resolve_working_dir(dir, true) when is_binary(dir) do
-    sandbox_root = Sandbox.sandbox_working_dir()
-    expanded = Path.expand(dir)
+  defp docker_fallback({:error, reason}, _cmd, _timeout, _dir, _env), do: {:error, reason}
 
-    normalized_root = String.replace(sandbox_root, "\\", "/")
-    normalized_dir = String.replace(expanded, "\\", "/")
-
-    if String.starts_with?(normalized_dir, normalized_root) do
-      File.mkdir_p!(expanded)
-      expanded
+  defp resolve_working_dir(nil) do
+    if Sandbox.sandbox_enabled?() do
+      dir = Sandbox.sandbox_working_dir()
+      File.mkdir_p!(dir)
+      dir
     else
-      File.mkdir_p!(sandbox_root)
-      sandbox_root
+      nil
     end
   end
 
-  defp resolve_working_dir(dir, false), do: dir
+  defp resolve_working_dir(dir) when is_binary(dir) do
+    if Sandbox.sandbox_enabled?() do
+      sandbox_root = Sandbox.sandbox_working_dir()
+      expanded = Path.expand(dir)
+
+      normalized_root = String.replace(sandbox_root, "\\", "/")
+      normalized_dir = String.replace(expanded, "\\", "/")
+
+      if String.starts_with?(normalized_dir, normalized_root) do
+        File.mkdir_p!(expanded)
+        expanded
+      else
+        File.mkdir_p!(sandbox_root)
+        sandbox_root
+      end
+    else
+      dir
+    end
+  end
 
   defp truncate(output) do
     if String.length(output) > @max_output do

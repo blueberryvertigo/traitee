@@ -3,13 +3,11 @@ defmodule Traitee.Tools.FileTest do
 
   alias Traitee.Tools.File, as: FileTool
 
-  import Traitee.TestHelpers
-
   describe "execute/1 sandbox enforcement" do
     test "blocks reading from .ssh directory" do
       result = FileTool.execute(%{"operation" => "read", "path" => "/home/user/.ssh/id_rsa"})
       assert {:error, msg} = result
-      assert msg =~ ".ssh"
+      assert msg =~ "deny" or msg =~ ".ssh"
     end
 
     test "blocks writing to .env file" do
@@ -21,29 +19,30 @@ defmodule Traitee.Tools.FileTest do
         })
 
       assert {:error, msg} = result
-      assert msg =~ ".env"
+      assert msg =~ "deny" or msg =~ ".env"
     end
 
     test "blocks reading credentials.json" do
       result = FileTool.execute(%{"operation" => "read", "path" => "/home/user/credentials.json"})
       assert {:error, msg} = result
-      assert msg =~ "credentials.json"
+      assert msg =~ "deny" or msg =~ "credentials.json"
     end
 
     test "blocks listing .aws directory" do
       result = FileTool.execute(%{"operation" => "list", "path" => "/home/user/.aws"})
       assert {:error, msg} = result
-      assert msg =~ ".aws"
+      assert msg =~ "deny" or msg =~ ".aws"
     end
 
     test "blocks exists check on secrets.toml" do
       result = FileTool.execute(%{"operation" => "exists", "path" => "/app/secrets.toml"})
       assert {:error, msg} = result
-      assert msg =~ "secrets.toml"
+      assert msg =~ "deny" or msg =~ "secrets.toml"
     end
 
-    test "allows reading a safe file" do
-      dir = tmp_dir!()
+    test "allows reading a safe file within data dir" do
+      dir = Path.join(Traitee.data_dir(), "test_file_#{:erlang.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
       on_exit(fn -> File.rm_rf!(dir) end)
 
       safe_file = Path.join(dir, "notes.txt")
@@ -52,8 +51,9 @@ defmodule Traitee.Tools.FileTest do
       assert {:ok, "hello"} = FileTool.execute(%{"operation" => "read", "path" => safe_file})
     end
 
-    test "allows writing to a safe path" do
-      dir = tmp_dir!()
+    test "allows writing to a safe path within data dir" do
+      dir = Path.join(Traitee.data_dir(), "test_file_#{:erlang.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
       on_exit(fn -> File.rm_rf!(dir) end)
 
       safe_file = Path.join(dir, "output.txt")
@@ -68,8 +68,9 @@ defmodule Traitee.Tools.FileTest do
       assert File.read!(safe_file) == "data"
     end
 
-    test "allows listing a safe directory" do
-      dir = tmp_dir!()
+    test "allows listing a safe directory within data dir" do
+      dir = Path.join(Traitee.data_dir(), "test_file_#{:erlang.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
       on_exit(fn -> File.rm_rf!(dir) end)
 
       File.write!(Path.join(dir, "a.txt"), "")
@@ -86,9 +87,11 @@ defmodule Traitee.Tools.FileTest do
       assert {:error, "Missing required parameters: operation, path"} = FileTool.execute(%{})
     end
 
-    test "returns error for unknown operation" do
+    test "returns error for unknown operation on data dir path" do
+      path = Path.join(Traitee.data_dir(), "dummy_file")
+
       assert {:error, "Unknown operation: delete"} =
-               FileTool.execute(%{"operation" => "delete", "path" => "/tmp/x"})
+               FileTool.execute(%{"operation" => "delete", "path" => path})
     end
   end
 end

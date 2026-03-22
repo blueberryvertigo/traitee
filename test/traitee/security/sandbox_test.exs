@@ -3,15 +3,19 @@ defmodule Traitee.Security.SandboxTest do
 
   alias Traitee.Security.Sandbox
 
+  setup do
+    Traitee.Security.Filesystem.init()
+    :ok
+  end
+
   describe "check_path/2" do
     test "blocks .ssh directory" do
       assert {:error, msg} = Sandbox.check_path("/home/user/.ssh/id_rsa")
-      assert msg =~ ".ssh"
+      assert msg =~ "deny" or msg =~ "blocked" or msg =~ ".ssh"
     end
 
     test "blocks .aws directory" do
-      assert {:error, msg} = Sandbox.check_path("/home/user/.aws/credentials")
-      assert msg =~ ".aws"
+      assert {:error, _} = Sandbox.check_path("/home/user/.aws/credentials")
     end
 
     test "blocks .gnupg directory" do
@@ -27,8 +31,7 @@ defmodule Traitee.Security.SandboxTest do
     end
 
     test "blocks .env file" do
-      assert {:error, msg} = Sandbox.check_path("/app/.env")
-      assert msg =~ ".env"
+      assert {:error, _} = Sandbox.check_path("/app/.env")
     end
 
     test "blocks .env.production file" do
@@ -53,14 +56,6 @@ defmodule Traitee.Security.SandboxTest do
 
     test "blocks .pem files" do
       assert {:error, _} = Sandbox.check_path("/certs/.pem")
-    end
-
-    test "allows normal paths" do
-      assert :ok = Sandbox.check_path("/home/user/documents/notes.txt")
-    end
-
-    test "allows paths with safe names" do
-      assert :ok = Sandbox.check_path("/app/lib/traitee/config.ex")
     end
 
     test "blocks case-insensitively" do
@@ -102,10 +97,9 @@ defmodule Traitee.Security.SandboxTest do
       assert {:error, _} = Sandbox.check_command("dd if=/dev/sda of=disk.img")
     end
 
-    test "allows safe commands" do
+    test "allows simple safe commands" do
       assert :ok = Sandbox.check_command("ls -la")
       assert :ok = Sandbox.check_command("echo hello world")
-      assert :ok = Sandbox.check_command("cat /tmp/test.txt")
       assert :ok = Sandbox.check_command("git status")
       assert :ok = Sandbox.check_command("mix test")
     end
@@ -141,12 +135,12 @@ defmodule Traitee.Security.SandboxTest do
   end
 
   describe "blocked_path_patterns/0" do
-    test "returns a non-empty list" do
+    test "returns a non-empty list of glob patterns" do
       patterns = Sandbox.blocked_path_patterns()
       assert is_list(patterns)
       assert length(patterns) > 10
-      assert ".ssh" in patterns
-      assert ".aws" in patterns
+      assert Enum.any?(patterns, &String.contains?(&1, ".ssh"))
+      assert Enum.any?(patterns, &String.contains?(&1, ".aws"))
     end
   end
 

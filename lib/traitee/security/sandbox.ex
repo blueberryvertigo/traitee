@@ -1,263 +1,179 @@
 defmodule Traitee.Security.Sandbox do
   @moduledoc """
-  OS-level sandbox policy for tool execution.
+  Centralized sandbox enforcement layer for all tool execution.
 
-  Validates file paths against allowlists and blocklists, filters dangerous
-  shell commands, and scrubs secrets from child process environments.
-  Inspired by NanoClaw's mount-security model, adapted for Traitee's
-  single-process architecture.
+  Integrates the filesystem policy engine, audit trail, exec gates,
+  and Docker isolation into a single API that tools call before any
+  filesystem or command operation.
+
+  Unlike the previous opt-in model, sandbox enforcement is now global:
+  - `check_path/2` is called by ALL tools (file, bash implicit paths, dynamic)
+  - `check_command/2` is called by ALL command-executing tools
+  - `check_write/2` routes through exec gates for system-dir protection
+  - Docker isolation wraps execution when enabled
+
+  This module delegates to specialized subsystems:
+  - `Traitee.Security.Filesystem` — path/command policy evaluation
+  - `Traitee.Security.Audit` — structured event logging
+  - `Traitee.Security.ExecGate` — approval gates
+  - `Traitee.Security.Docker` — container isolation
   """
 
   require Logger
 
-  @blocked_path_patterns [
-    ".ssh",
-    ".gnupg",
-    ".gpg",
-    ".aws",
-    ".azure",
-    ".gcloud",
-    ".kube",
-    ".docker",
-    ".npmrc",
-    ".pypirc",
-    ".netrc",
-    "credentials",
-    "id_rsa",
-    "id_ed25519",
-    "id_ecdsa",
-    "id_dsa",
-    "private_key",
-    ".secret",
-    ".pem",
-    ".p12",
-    ".pfx",
-    ".keystore"
-  ]
+  alias Traitee.Security.{Audit, Docker, ExecGate, Filesystem}
 
-  @blocked_filenames [
-    ".env",
-    ".env.local",
-    ".env.production",
-    ".env.staging",
-    "secrets.toml",
-    "secrets.yml",
-    "secrets.yaml",
-    "secrets.json",
-    "credentials.json",
-    "service-account.json",
-    "master.key",
-    "shadow",
-    "passwd"
-  ]
-
-  @dangerous_command_patterns [
-    ~r/\bcurl\b.*\|\s*(ba)?sh\b/i,
-    ~r/\bwget\b.*\|\s*(ba)?sh\b/i,
-    ~r/\beval\b.*\$\(/,
-    ~r/\bnc\b\s+-[el]/i,
-    ~r/\bncat\b/i,
-    ~r/\bsocat\b/i,
-    ~r/\bpython\S*\s+-c\s+.*\bsocket\b/i,
-    ~r/\bchmod\b.*\+s\b/,
-    ~r/\bmkfifo\b/,
-    ~r/\bdd\b\s+if=\/dev\//,
-    ~r/\brm\s+(-[rRf]+\s+)*(\/|~\/?\s*$)/,
-    ~r/\b>\s*\/dev\/sd[a-z]/,
-    ~r/\b(fork|:)\s*\(\)\s*\{/,
-    ~r/:\(\)\{\s*:\|:\s*&\s*\};:/
-  ]
-
-  @secret_env_patterns [
-    ~r/KEY/i,
-    ~r/SECRET/i,
-    ~r/TOKEN/i,
-    ~r/PASSWORD/i,
-    ~r/CREDENTIAL/i,
-    ~r/AUTH/i
-  ]
-
-  @safe_env_allowlist [
-    "PATH",
-    "HOME",
-    "USER",
-    "SHELL",
-    "LANG",
-    "LC_ALL",
-    "TERM",
-    "TZ",
-    "TMPDIR",
-    "TEMP",
-    "TMP",
-    "HOSTNAME",
-    "PWD",
-    "MIX_ENV",
-    "PORT",
-    "PHX_HOST",
-    "XDG_DATA_HOME",
-    "XDG_CONFIG_HOME",
-    "SYSTEMROOT",
-    "COMSPEC",
-    "PATHEXT",
-    "PROGRAMFILES",
-    "WINDIR",
-    "APPDATA",
-    "LOCALAPPDATA",
-    "USERPROFILE"
-  ]
-
-  # -- Path validation --
+  # -- Path validation (delegates to Filesystem) --
 
   @doc """
-  Checks whether a file path is safe to access.
-  Resolves symlinks, checks against blocked patterns/filenames,
-  and enforces the allowed_paths allowlist when configured.
+  Check whether a file path is safe to access for the given operation.
+
+  Always enforced regardless of sandbox mode. Evaluates against:
+  1. Hardcoded deny list (sensitive paths)
+  2. Configured deny rules
+  3. Configured allow rules with per-path permissions
+  4. Default policy
+  5. Exec gate for writes
 
   Returns `:ok` or `{:error, reason}`.
   """
   @spec check_path(String.t(), keyword()) :: :ok | {:error, String.t()}
   def check_path(path, opts \\ []) do
     operation = Keyword.get(opts, :operation, :read)
-    resolved = resolve_path(path)
 
-    with :ok <- check_blocked_patterns(resolved),
-         :ok <- check_blocked_filenames(resolved),
-         :ok <- check_allowed_paths(resolved, operation) do
+    with :ok <- Filesystem.check_path(path, opts),
+         :ok <- maybe_exec_gate_write(path, operation, opts) do
       :ok
     end
   end
 
-  @doc "Returns the list of blocked path patterns."
+  @doc "Returns the list of hardcoded blocked path patterns."
   @spec blocked_path_patterns() :: [String.t()]
-  def blocked_path_patterns, do: @blocked_path_patterns
+  def blocked_path_patterns, do: Filesystem.hardcoded_deny_patterns()
 
-  @doc "Returns the list of blocked filenames."
+  @doc "Returns the list of hardcoded blocked filenames (legacy compat)."
   @spec blocked_filenames() :: [String.t()]
-  def blocked_filenames, do: @blocked_filenames
+  def blocked_filenames do
+    [
+      ".env", ".env.local", ".env.production", ".env.staging",
+      "secrets.toml", "secrets.yml", "secrets.yaml", "secrets.json",
+      "credentials.json", "service-account.json", "master.key",
+      "shadow", "passwd"
+    ]
+  end
 
-  # -- Command validation --
+  # -- Command validation (delegates to Filesystem + ExecGate) --
 
   @doc """
-  Checks whether a shell command is safe to execute.
+  Check whether a shell command is safe to execute.
+
+  Always enforced — sandbox mode controls Docker isolation and working
+  directory jailing, but command validation runs regardless.
+
   Returns `:ok` or `{:error, reason}`.
   """
-  @spec check_command(String.t()) :: :ok | {:error, String.t()}
-  def check_command(command) do
-    case Enum.find(@dangerous_command_patterns, &Regex.match?(&1, command)) do
-      nil ->
-        :ok
-
-      pattern ->
-        Logger.warning("[Sandbox] Blocked dangerous command: #{inspect(command)}")
-        {:error, "Command blocked by sandbox policy: matches #{inspect(Regex.source(pattern))}"}
+  @spec check_command(String.t(), keyword()) :: :ok | {:error, String.t()}
+  def check_command(command, opts \\ []) do
+    with :ok <- Filesystem.check_command(command, opts),
+         :ok <- maybe_exec_gate_command(command, opts) do
+      :ok
     end
   end
 
-  # -- Environment scrubbing --
+  # -- Environment scrubbing (delegates to Filesystem) --
 
   @doc """
-  Returns a scrubbed environment variable list suitable for child processes.
-  Strips any variable whose name matches secret patterns, unless it appears
-  in the safe allowlist.
+  Returns a scrubbed environment variable list safe for child processes.
+  Always active — secrets are never passed to tool subprocesses.
   """
-  @spec scrubbed_env() :: [{String.t(), String.t()}]
-  def scrubbed_env do
-    System.get_env()
-    |> Enum.filter(fn {key, _val} -> safe_env_var?(key) end)
-    |> Enum.map(fn {k, v} -> {String.to_charlist(k), String.to_charlist(v)} end)
-  end
+  @spec scrubbed_env() :: [{charlist(), charlist()}]
+  def scrubbed_env, do: Filesystem.scrubbed_env()
 
-  @doc "Checks whether sandbox mode is enabled for bash tools."
+  # -- Sandbox mode queries --
+
+  @doc "Returns whether sandbox mode is enabled (controls Docker + working dir jail)."
   @spec sandbox_enabled?() :: boolean()
-  def sandbox_enabled? do
-    Traitee.Config.get([:tools, :bash, :sandbox]) == true
-  end
+  def sandbox_enabled?, do: Filesystem.sandbox_enabled?()
 
-  @doc "Returns the configured working directory for sandboxed bash, or a safe default."
+  @doc "Returns the sandbox working directory."
   @spec sandbox_working_dir() :: String.t()
-  def sandbox_working_dir do
-    configured = Traitee.Config.get([:tools, :bash, :working_dir])
+  def sandbox_working_dir, do: Filesystem.sandbox_working_dir()
 
-    if is_binary(configured) and configured != "" do
-      Path.expand(configured)
-    else
-      Path.join(Traitee.data_dir(), "sandbox")
-    end
-  end
+  # -- Docker-wrapped execution --
 
-  # -- Private --
+  @doc """
+  Execute a command with full sandbox enforcement.
 
-  defp resolve_path(path) do
-    expanded = Path.expand(path)
+  When Docker isolation is enabled and available, runs in a container.
+  Otherwise runs via the process executor with env scrubbing and
+  working directory constraints.
 
-    case File.read_link(expanded) do
-      {:ok, target} ->
-        target
-        |> Path.expand(Path.dirname(expanded))
-        |> resolve_path()
+  Always validates the command through check_command first.
+  """
+  @spec execute(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  def execute(command, opts \\ []) do
+    with :ok <- check_command(command, opts) do
+      if Docker.enabled?() do
+        case Docker.run(command, opts) do
+          {:ok, result} ->
+            {:ok, result}
 
-      {:error, _} ->
-        expanded
-    end
-  end
+          {:error, {:docker_unavailable, _}} ->
+            Logger.warning("[Sandbox] Docker unavailable, falling back to host execution")
+            execute_host(command, opts)
 
-  defp check_blocked_patterns(resolved) do
-    parts = Path.split(resolved)
-
-    case Enum.find(@blocked_path_patterns, fn pattern ->
-           Enum.any?(parts, &(String.downcase(&1) == String.downcase(pattern)))
-         end) do
-      nil -> :ok
-      pattern -> {:error, "Path blocked: contains sensitive directory \"#{pattern}\""}
-    end
-  end
-
-  defp check_blocked_filenames(resolved) do
-    basename = Path.basename(resolved) |> String.downcase()
-
-    case Enum.find(@blocked_filenames, &(String.downcase(&1) == basename)) do
-      nil -> :ok
-      name -> {:error, "Path blocked: sensitive filename \"#{name}\""}
-    end
-  end
-
-  defp check_allowed_paths(resolved, operation) do
-    allowed = Traitee.Config.get([:tools, :file, :allowed_paths]) || []
-
-    if allowed == [] do
-      :ok
-    else
-      data_dir = Traitee.data_dir() |> Path.expand()
-      effective = Enum.map(allowed, &Path.expand/1) ++ [data_dir]
-
-      if Enum.any?(effective, &path_under?(&1, resolved)) do
-        :ok
+          {:error, reason} ->
+            {:error, reason}
+        end
       else
-        action = if operation == :read, do: "read", else: "write"
-        {:error, "Path not in allowed_paths for #{action}: #{resolved}"}
+        execute_host(command, opts)
       end
     end
   end
 
-  defp path_under?(root, path) do
-    normalized_root = String.replace(root, "\\", "/") |> ensure_trailing_slash()
-    normalized_path = String.replace(path, "\\", "/")
+  # -- Posture summary --
 
-    String.starts_with?(normalized_path, normalized_root) or
-      normalized_path == String.trim_trailing(normalized_root, "/")
+  @doc "Returns a comprehensive security posture summary."
+  @spec posture() :: map()
+  def posture do
+    fs = Filesystem.posture_summary()
+    docker = Docker.posture()
+    audit_stats = Audit.stats()
+
+    Map.merge(fs, %{
+      docker: docker,
+      audit: audit_stats,
+      exec_gate_rules: ExecGate.active_rules()
+    })
   end
 
-  defp ensure_trailing_slash(path) do
-    if String.ends_with?(path, "/"), do: path, else: path <> "/"
+  # -- Private --
+
+  defp execute_host(command, opts) do
+    timeout = Keyword.get(opts, :timeout_ms, 30_000)
+    working_dir = Keyword.get(opts, :working_dir)
+    env = scrubbed_env()
+
+    Traitee.Process.Executor.run(command,
+      timeout_ms: timeout,
+      working_dir: working_dir,
+      env: env
+    )
   end
 
-  defp safe_env_var?(key) do
-    upper = String.upcase(key)
+  defp maybe_exec_gate_write(_path, operation, _opts) when operation in [:read, :list, :exists] do
+    :ok
+  end
 
-    if Enum.any?(@safe_env_allowlist, &(String.upcase(&1) == upper)) do
-      true
-    else
-      not Enum.any?(@secret_env_patterns, &Regex.match?(&1, key))
+  defp maybe_exec_gate_write(path, _operation, opts) do
+    ExecGate.check_write(path, opts)
+  end
+
+  defp maybe_exec_gate_command(command, opts) do
+    case ExecGate.evaluate(command, opts) do
+      {:approve, _reason} -> :ok
+      {:warn, _reason} -> :ok
+      {:deny, reason} -> {:error, "Exec gate denied: #{reason}"}
     end
   end
 end

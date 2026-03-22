@@ -1,10 +1,15 @@
 defmodule Traitee.Tools.Dynamic do
   @moduledoc """
   Execution engine for dynamically registered script-based tools.
-  Supports bash template and script file executor types.
+
+  Now routes all execution through the centralized sandbox — command
+  validation, filesystem policy, exec gates, environment scrubbing,
+  and Docker isolation are enforced for dynamic tools just as for
+  built-in tools.
   """
 
   alias Traitee.Process.Executor
+  alias Traitee.Security.{Docker, Sandbox}
 
   @max_output 10_000
   @default_timeout 30_000
@@ -18,47 +23,39 @@ defmodule Traitee.Tools.Dynamic do
         }
 
   @spec execute(tool_spec(), map()) :: {:ok, String.t()} | {:error, String.t()}
-  def execute(%{executor: {:bash, template}}, args) do
+  def execute(%{executor: {:bash, template}, name: tool_name}, args) do
     command = interpolate(template, args)
+    session_id = args["_session_id"]
 
-    case Executor.run(command, timeout_ms: @default_timeout) do
-      {:ok, %{stdout: output, exit_code: 0}} ->
-        {:ok, truncate(output)}
+    with :ok <- Sandbox.check_command(command, tool: "dynamic:#{tool_name}", session_id: session_id) do
+      env = Sandbox.scrubbed_env()
 
-      {:ok, %{stdout: output, exit_code: code}} ->
-        {:ok, "Exit code #{code}:\n#{truncate(output)}"}
+      result =
+        if Docker.enabled?() do
+          case Docker.run(command, timeout_ms: @default_timeout, env: env, session_id: session_id) do
+            {:ok, r} -> {:ok, r}
+            {:error, {:docker_unavailable, _}} ->
+              Executor.run(command, timeout_ms: @default_timeout, env: env)
+            other -> other
+          end
+        else
+          Executor.run(command, timeout_ms: @default_timeout, env: env)
+        end
 
-      {:error, :timeout} ->
-        {:error, "Tool timed out after #{@default_timeout}ms"}
-
-      {:error, reason} ->
-        {:error, "Tool failed: #{inspect(reason)}"}
+      format_tool_result(result)
     end
   end
 
-  def execute(%{executor: {:script, path}}, args) do
-    json_args = Jason.encode!(args)
+  def execute(%{executor: {:script, path}, name: tool_name}, args) do
+    session_id = args["_session_id"]
 
-    command =
-      case Path.extname(path) do
-        ".py" -> "echo #{shell_escape(json_args)} | python #{shell_escape(path)}"
-        ".sh" -> "echo #{shell_escape(json_args)} | bash #{shell_escape(path)}"
-        ".js" -> "echo #{shell_escape(json_args)} | node #{shell_escape(path)}"
-        _ -> "echo #{shell_escape(json_args)} | #{shell_escape(path)}"
+    with :ok <- Sandbox.check_path(path, operation: :exec, tool: "dynamic:#{tool_name}", session_id: session_id) do
+      command = build_script_command(path, args)
+
+      with :ok <- Sandbox.check_command(command, tool: "dynamic:#{tool_name}", session_id: session_id) do
+        run_with_sandbox(command, session_id)
+        |> format_script_result()
       end
-
-    case Executor.run(command, timeout_ms: @default_timeout) do
-      {:ok, %{stdout: output, exit_code: 0}} ->
-        {:ok, truncate(output)}
-
-      {:ok, %{stdout: output, exit_code: code}} ->
-        {:ok, "Exit code #{code}:\n#{truncate(output)}"}
-
-      {:error, :timeout} ->
-        {:error, "Script timed out after #{@default_timeout}ms"}
-
-      {:error, reason} ->
-        {:error, "Script failed: #{inspect(reason)}"}
     end
   end
 
@@ -76,9 +73,46 @@ defmodule Traitee.Tools.Dynamic do
     }
   end
 
+  defp build_script_command(path, args) do
+    json_args = Jason.encode!(args)
+
+    case Path.extname(path) do
+      ".py" -> "echo #{shell_escape(json_args)} | python #{shell_escape(path)}"
+      ".sh" -> "echo #{shell_escape(json_args)} | bash #{shell_escape(path)}"
+      ".js" -> "echo #{shell_escape(json_args)} | node #{shell_escape(path)}"
+      _ -> "echo #{shell_escape(json_args)} | #{shell_escape(path)}"
+    end
+  end
+
+  defp run_with_sandbox(command, session_id) do
+    env = Sandbox.scrubbed_env()
+
+    if Docker.enabled?() do
+      case Docker.run(command, timeout_ms: @default_timeout, env: env, session_id: session_id) do
+        {:ok, r} -> {:ok, r}
+        {:error, {:docker_unavailable, _}} -> Executor.run(command, timeout_ms: @default_timeout, env: env)
+        other -> other
+      end
+    else
+      Executor.run(command, timeout_ms: @default_timeout, env: env)
+    end
+  end
+
+  defp format_tool_result({:ok, %{stdout: output, exit_code: 0}}), do: {:ok, truncate(output)}
+  defp format_tool_result({:ok, %{stdout: output, exit_code: code}}), do: {:ok, "Exit code #{code}:\n#{truncate(output)}"}
+  defp format_tool_result({:error, :timeout}), do: {:error, "Tool timed out after #{@default_timeout}ms"}
+  defp format_tool_result({:error, reason}), do: {:error, "Tool failed: #{inspect(reason)}"}
+
+  defp format_script_result({:ok, %{stdout: output, exit_code: 0}}), do: {:ok, truncate(output)}
+  defp format_script_result({:ok, %{stdout: output, exit_code: code}}), do: {:ok, "Exit code #{code}:\n#{truncate(output)}"}
+  defp format_script_result({:error, :timeout}), do: {:error, "Script timed out after #{@default_timeout}ms"}
+  defp format_script_result({:error, reason}), do: {:error, "Script failed: #{inspect(reason)}"}
+
   defp interpolate(template, args) do
-    Enum.reduce(args, template, fn {key, value}, acc ->
-      String.replace(acc, "${#{key}}", shell_escape(to_string(value)))
+    Enum.reduce(args, template, fn
+      {"_session_id", _}, acc -> acc
+      {key, value}, acc ->
+        String.replace(acc, "${#{key}}", shell_escape(to_string(value)))
     end)
   end
 
