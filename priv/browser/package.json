@@ -1,0 +1,9 @@
+{
+  "private": true,
+  "name": "traitee-browser-bridge",
+  "version": "0.1.0",
+  "type": "module",
+  "dependencies": {
+    "playwright": "^1.52.0"
+  }
+}

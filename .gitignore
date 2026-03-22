@@ -1,0 +1,57 @@
+# Elixir/Mix
+/_build/
+/deps/
+*.ez
+*.beam
+
+# Database
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Generated on crash
+erl_crash.dump
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# IDE
+.elixir_ls/
+.lexical/
+.vscode/
+.idea/
+.cursor/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor temp/swap files
+*.swp
+*.swo
+*~
+*.bak
+*.tmp
+
+# Test coverage
+/cover/
+/coveralls.json
+
+# Dialyzer PLTs
+/priv/plts/
+
+# Release
+/rel/
+
+# Node (browser bridge)
+node_modules/
+npm-debug.log*
+
+# Traitee data (local development)
+# ~/.traitee/ is the runtime data dir — never committed
+approved_senders.json
+config.toml
