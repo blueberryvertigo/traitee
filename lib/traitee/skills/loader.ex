@@ -331,6 +331,112 @@ defmodule Traitee.Skills.Loader do
     """
   end
 
+  @protected_skills ~w(self-reflect create-skill)
+  @name_pattern ~r/^[a-z0-9][a-z0-9\-]*$/
+
+  @doc "Creates a new skill directory and SKILL.md with the given frontmatter and body."
+  def create_skill(name, %{} = meta, body) when is_binary(name) and is_binary(body) do
+    with :ok <- validate_name(name),
+         :ok <- ensure_not_exists(name) do
+      frontmatter = build_frontmatter(name, meta)
+      content = frontmatter <> "\n" <> String.trim(body) <> "\n"
+
+      dir = Path.join(skills_dir(), name)
+      File.mkdir_p!(dir)
+      File.write!(Path.join(dir, "SKILL.md"), content)
+      invalidate_cache()
+      {:ok, "Created skill: #{name}"}
+    end
+  end
+
+  @doc "Replaces the full body of an existing SKILL.md, preserving frontmatter."
+  def update_skill(name, new_body) when is_binary(name) and is_binary(new_body) do
+    path = skill_md_path(name)
+
+    with {:ok, raw} <- File.read(path),
+         {:ok, fm_block} <- extract_frontmatter_block(raw) do
+      content = fm_block <> "\n" <> String.trim(new_body) <> "\n"
+      File.write!(path, content)
+      invalidate_cache()
+      {:ok, "Updated skill: #{name}"}
+    else
+      {:error, :enoent} -> {:error, "Skill not found: #{name}"}
+      error -> error
+    end
+  end
+
+  @doc "Patches an existing SKILL.md with substring replacement."
+  def patch_skill(name, old_string, new_string)
+      when is_binary(name) and is_binary(old_string) and is_binary(new_string) do
+    path = skill_md_path(name)
+
+    with {:ok, raw} <- File.read(path),
+         :ok <- validate_unique_match(raw, old_string) do
+      new_content = String.replace(raw, old_string, new_string, global: false)
+      File.write!(path, new_content)
+      invalidate_cache()
+      {:ok, "Patched skill: #{name}"}
+    else
+      {:error, :enoent} -> {:error, "Skill not found: #{name}"}
+      error -> error
+    end
+  end
+
+  @doc "Deletes a skill directory. Refuses to delete protected template skills."
+  def delete_skill(name) when is_binary(name) do
+    if name in @protected_skills do
+      {:error, "Cannot delete protected skill: #{name}"}
+    else
+      dir = Path.join(skills_dir(), name)
+
+      if File.dir?(dir) do
+        File.rm_rf!(dir)
+        invalidate_cache()
+        {:ok, "Deleted skill: #{name}"}
+      else
+        {:error, "Skill not found: #{name}"}
+      end
+    end
+  end
+
+  defp validate_name(name) do
+    if Regex.match?(@name_pattern, name) do
+      :ok
+    else
+      {:error, "Invalid skill name: use lowercase letters, numbers, and hyphens only"}
+    end
+  end
+
+  defp ensure_not_exists(name) do
+    if File.exists?(skill_md_path(name)) do
+      {:error, "Skill already exists: #{name}. Use patch or edit to modify."}
+    else
+      :ok
+    end
+  end
+
+  defp build_frontmatter(name, meta) do
+    desc = meta[:description] || meta["description"] || ""
+    version = meta[:version] || meta["version"] || "1.0"
+
+    "---\nname: #{name}\ndescription: #{desc}\nenabled: true\nversion: \"#{version}\"\n---\n"
+  end
+
+  defp extract_frontmatter_block(content) do
+    case Regex.run(~r/\A(---\n.*?\n---\n?)/s, content) do
+      [_, block] -> {:ok, block}
+      _ -> {:error, "No frontmatter found in SKILL.md"}
+    end
+  end
+
+  defp validate_unique_match(content, old_string) do
+    case length(String.split(content, old_string)) - 1 do
+      0 -> {:error, "Substring not found"}
+      1 -> :ok
+      n -> {:error, "Substring matches #{n} locations — provide a more specific match"}
+    end
+  end
+
   defp skill_md_path(name), do: Path.join([skills_dir(), name, "SKILL.md"])
 
   defp stale? do

@@ -107,6 +107,81 @@ defmodule Traitee.Workspace do
     end
   end
 
+  @max_file_size 8_000
+
+  @doc "Returns the raw content of a workspace file by key (:soul, :agents, :tools)."
+  def read_raw(key) when key in [:soul, :agents, :tools] do
+    path = Path.join(workspace_dir(), Map.fetch!(@workspace_files, key))
+
+    case File.read(path) do
+      {:ok, content} -> {:ok, String.trim(content)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc "Performs a substring replacement in a workspace file. Creates a .bak backup first."
+  def patch_file(key, old_string, new_string)
+      when key in [:soul, :agents, :tools] and is_binary(old_string) and is_binary(new_string) do
+    path = Path.join(workspace_dir(), Map.fetch!(@workspace_files, key))
+
+    with {:ok, content} <- File.read(path),
+         :ok <- validate_unique_match(content, old_string),
+         new_content = String.replace(content, old_string, new_string, global: false),
+         :ok <- validate_size(new_content),
+         :ok <- backup_and_write(path, new_content) do
+      invalidate_cache()
+      {:ok, "Patched #{Map.fetch!(@workspace_files, key)}"}
+    end
+  end
+
+  @doc "Appends content to a workspace file. Creates a .bak backup first."
+  def append_to_file(key, content)
+      when key in [:soul, :agents, :tools] and is_binary(content) do
+    path = Path.join(workspace_dir(), Map.fetch!(@workspace_files, key))
+
+    with {:ok, existing} <- File.read(path),
+         new_content = existing <> "\n" <> content,
+         :ok <- validate_size(new_content),
+         :ok <- backup_and_write(path, new_content) do
+      invalidate_cache()
+      {:ok, "Appended to #{Map.fetch!(@workspace_files, key)}"}
+    end
+  end
+
+  @doc "Clears the persistent_term cache so changes take effect on next read."
+  def invalidate_cache do
+    :persistent_term.erase(@cache_key)
+    :ok
+  rescue
+    ArgumentError -> :ok
+  end
+
+  defp validate_unique_match(content, old_string) do
+    case length(String.split(content, old_string)) - 1 do
+      0 -> {:error, "Substring not found in file"}
+      1 -> :ok
+      n -> {:error, "Substring matches #{n} locations — provide a more specific match"}
+    end
+  end
+
+  defp validate_size(content) do
+    if String.length(content) > @max_file_size do
+      {:error,
+       "File would exceed #{@max_file_size} character limit (#{String.length(content)} chars)"}
+    else
+      :ok
+    end
+  end
+
+  defp backup_and_write(path, content) do
+    bak = path <> ".bak"
+
+    case File.cp(path, bak) do
+      :ok -> File.write(path, content)
+      {:error, reason} -> {:error, "Backup failed: #{reason}"}
+    end
+  end
+
   defp file_mtime(path) do
     case File.stat(path, time: :posix) do
       {:ok, %{mtime: mtime}} -> {:ok, mtime}
@@ -128,7 +203,9 @@ defmodule Traitee.Workspace do
     - **Persistent Memory**: Short-term (conversation), medium-term (session summaries), and long-term memory (facts and knowledge graph) that survive across sessions.
     - **Multi-Channel**: Reachable via CLI, Discord, Telegram, WhatsApp, and Signal.
     - **Scheduled Jobs**: Run cron jobs, both recurring and one-shot tasks on a schedule.
-    - **Custom Skills**: Extensible with user-defined skills loaded from the workspace.
+    - **Self-Improvement**: You can create, edit, and delete your own skills, and modify your own identity (SOUL.md), instructions (AGENTS.md), and tool guidelines (TOOLS.md) to evolve over time.
+    - **Subagent Delegation**: Spawn parallel subagents to divide complex work into independent tasks that run concurrently, each with their own tool access and isolated context.
+    - **Custom Skills**: Extensible with skills loaded from the workspace. You can also create new skills yourself after learning complex workflows.
 
     When asked what you can do, describe these platform capabilities, not generic LLM abilities like writing essays or brainstorming.
     """
@@ -143,6 +220,22 @@ defmodule Traitee.Workspace do
     - Only use tools when the task genuinely requires them (looking up a URL, running a command, reading a file, browsing the web).
     - When you use the browser, always narrate what you're doing briefly so the user knows what's happening.
     - If a tool fails, explain the error to the user instead of silently retrying.
+
+    ## Self-Improvement
+
+    - After completing a complex task (5+ tool calls), consider creating a skill to capture the workflow for future reuse.
+    - When the user corrects your approach, remember the correction and consider updating your skills or instructions.
+    - Use `workspace_edit` to read and refine your own SOUL.md, AGENTS.md, or TOOLS.md when you discover better patterns.
+    - Use `skill_manage` to create, patch, or delete skills as your procedural knowledge evolves.
+    - Always create a backup-worthy change: prefer `patch` (targeted) over `edit` (full rewrite) to minimize risk.
+
+    ## Delegation
+
+    - When facing multiple independent subtasks, use `delegate_task` to run them in parallel instead of sequentially.
+    - Each subagent must be given an explicit list of tools -- only grant what the subtask needs.
+    - Give each subagent a unique, descriptive `tag` so results are easy to identify in the XML response.
+    - Parse the `<delegate_results>` XML to synthesize a unified answer for the user.
+    - Do not delegate trivial tasks that would be faster to do directly.
     """
   end
 
@@ -211,6 +304,76 @@ defmodule Traitee.Workspace do
     ## File Tool
 
     Use for reading/writing files. Always use absolute paths or paths relative to the workspace.
+
+    ## Skill Management Tool
+
+    You can manage your own skills (procedural memory) via the `skill_manage` tool.
+
+    ### Actions
+
+    - `create` — Create a new skill. Provide `name` (lowercase-hyphenated), `description` (keyword-rich for matching), and `content` (the markdown body with instructions).
+    - `patch` — Targeted substring replacement in an existing skill. Provide `name`, `old_string`, `new_string`. Preferred over `edit` for small changes.
+    - `edit` — Full body rewrite of an existing skill. Provide `name` and `content`. Use only for major rewrites.
+    - `delete` — Remove a skill. The template skills `self-reflect` and `create-skill` cannot be deleted.
+    - `list` — Show all installed skills with their enabled/disabled status.
+
+    ### When to Create Skills
+
+    - After completing a complex multi-step task successfully
+    - When you discover a non-trivial workflow with error-prone steps
+    - When the user corrects your approach and you want to remember the right way
+    - When a task type is likely to recur
+
+    ## Workspace Edit Tool
+
+    You can read and modify your own identity and instruction files via the `workspace_edit` tool.
+
+    ### Actions
+
+    - `read` — View the current content of a file. `file` must be one of: `soul`, `agents`, `tools`.
+    - `patch` — Targeted substring replacement. Provide `file`, `old_string`, `new_string`. A `.bak` backup is created automatically.
+    - `append` — Add a new section to the end of a file. Provide `file` and `content`.
+
+    ### Guidelines
+
+    - Files are capped at 8,000 characters to keep the system prompt bounded.
+    - Changes take effect on the next session (the current session keeps its original prompt).
+    - Use `read` first to understand the current content before making changes.
+    - Prefer `patch` over rewriting entire sections.
+
+    ## Delegate Task Tool
+
+    You can spawn parallel subagents via the `delegate_task` tool to divide work.
+
+    ### Parameters
+
+    - `tasks` — Array of task objects, each with:
+      - `tag` — Unique identifier (e.g. "research", "code-review", "testing")
+      - `description` — The full task description for the subagent
+      - `tools` — Array of tool names the subagent can use (e.g. `["bash", "file"]`)
+    - `timeout` — Optional per-subagent timeout in ms (default: 60000, max: 120000)
+
+    ### Results Format
+
+    Results come back as XML:
+    ```
+    <delegate_results count="2" completed="2" failed="0">
+      <subagent tag="research" status="completed" duration_ms="4521">
+        ...results...
+      </subagent>
+      <subagent tag="code" status="completed" duration_ms="8903">
+        ...results...
+      </subagent>
+    </delegate_results>
+    ```
+
+    ### Tips
+
+    - Max 5 subagents per delegation call.
+    - Subagents cannot delegate further (no recursive delegation).
+    - Each subagent has a max of 3 tool iterations.
+    - Only grant tools that the subtask actually needs.
+    - Use delegation for independent tasks: research + implementation, multi-file analysis, parallel searches.
     """
   end
 

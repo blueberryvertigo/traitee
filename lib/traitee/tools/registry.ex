@@ -19,7 +19,10 @@ defmodule Traitee.Tools.Registry do
     Traitee.Tools.Memory,
     Traitee.Tools.Sessions,
     Traitee.Tools.Cron,
-    Traitee.Tools.ChannelSend
+    Traitee.Tools.ChannelSend,
+    Traitee.Tools.SkillManage,
+    Traitee.Tools.WorkspaceEdit,
+    Traitee.Tools.DelegateTask
   ]
 
   @doc "Initialize the dynamic tools ETS table and load persisted tools."
@@ -214,6 +217,9 @@ defmodule Traitee.Tools.Registry do
         "memory" -> %{enabled: true}
         "sessions" -> %{enabled: true}
         "channel_send" -> %{enabled: true}
+        "skill_manage" -> %{enabled: true}
+        "workspace_edit" -> %{enabled: true}
+        "delegate_task" -> Traitee.Config.get([:tools, :delegate_task]) || %{enabled: true}
         _ -> %{enabled: false}
       end
 
