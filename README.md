@@ -207,6 +207,9 @@ provider (OpenAI, Anthropic, xAI, or local Ollama).
 |  |  |  |  progressive     |  | browser, memory      |                |  |   |
 |  |  |  |  disclosure)     |  | sessions, cron       |                |  |   |
 |  |  |  +--------+---------+  | channel_send         |                |  |   |
+|  |  |           |            | skill_manage         |                |  |   |
+|  |  |           |            | workspace_edit       |                |  |   |
+|  |  |           |            | delegate_task        |                |  |   |
 |  |  |           |            | (5 iterations max)   |                |  |   |
 |  |  |           |            +----------+------------+                |  |   |
 |  |  +-----------|------------------------|-----------+----------------+  |   |
@@ -312,6 +315,41 @@ both an internal API and an LLM tool -- the assistant can coordinate across
 its own conversations. Messages arrive prefixed with `[from <source_id>]`.
 
 Self-referencing is guarded: a session cannot query or message itself.
+
+### Subagent Delegation
+
+The `delegate_task` tool spawns lightweight subagents for parallel workstreams.
+Each subagent runs outside the session GenServer -- it's a `Task.async` with its
+own LLM completion loop, not a full session process. This keeps subagents cheap
+and isolated without polluting the parent's STM or context window.
+
+```
+  Parent Session GenServer
+       |
+       | delegate_task(tasks: [...])
+       v
+  Delegation.Runner.run/2
+       |
+       +-- Task.async -> subagent "research"     (tools: [web_search, browser])
+       |                 system prompt + task      3-iteration tool loop
+       |                 IOGuard on tool calls     no STM/MTM/LTM
+       |
+       +-- Task.async -> subagent "code-review"  (tools: [bash, file])
+       |                 system prompt + task      3-iteration tool loop
+       |
+       +-- Task.yield_many(timeout)
+       |
+       v
+  <delegate_results count="2" completed="2" failed="0">
+    <subagent tag="research" status="completed" duration_ms="4521">...</subagent>
+    <subagent tag="code-review" status="completed" duration_ms="8903">...</subagent>
+  </delegate_results>
+```
+
+Constraints: max 5 concurrent subagents, per-subagent timeout (default 60s,
+max 120s), no recursive delegation (`delegate_task` is excluded from subagent
+tool schemas). The parent specifies which tools each subagent can use --
+subagents never inherit the full tool registry.
 
 ## Multi-Agent Routing
 
@@ -620,6 +658,32 @@ Two template skills bootstrapped on first run: **self-reflect** (reviews error
 patterns and proposes self-improvements) and **create-skill** (guide for creating
 new skills with proper SKILL.md format).
 
+### Agent-Managed Skills (Self-Improvement)
+
+The agent can create, update, patch, and delete its own skills via the
+`skill_manage` tool. This is the agent's procedural memory -- when it figures
+out a non-trivial workflow, it saves the approach as a skill for future reuse.
+
+```
+  When the Agent Creates Skills
+  ==============================
+  - After completing a complex task (5+ tool calls) successfully
+  - When it hit errors or dead ends and found the working path
+  - When the user corrected its approach
+  - When it discovered a non-trivial workflow
+
+  Actions
+  =======
+  create ........... new skill from name + description + body
+  patch ............ targeted substring fix (preferred for updates)
+  edit ............. full body rewrite (preserves frontmatter)
+  delete ........... remove a skill (template skills protected)
+  list ............. show all skills with status
+```
+
+Skill names are validated (`^[a-z0-9][a-z0-9\-]*$` -- no path traversal).
+Cache invalidation is immediate on write (no 60s wait).
+
 ## LLM Providers
 
 ```
@@ -663,35 +727,49 @@ API keys resolve from two sources: environment variables first, then
 ## Tools
 
 ```
-  +-------------+---------------------------------------------------------------+
-  | Tool        | Description                                                   |
-  +-------------+---------------------------------------------------------------+
-  | bash        | Cross-platform shell (cmd.exe on Windows, sh on Unix)         |
-  |             | 30s timeout, 100KB output cap, process tree kill on timeout   |
-  +-------------+---------------------------------------------------------------+
-  | file        | read (50K cap), write (auto-mkdir), append, list (with type   |
-  |             | annotation), exists                                           |
-  +-------------+---------------------------------------------------------------+
-  | web_search  | SearXNG provider, configurable result count (default 5)       |
-  +-------------+---------------------------------------------------------------+
-  | browser     | Playwright via Node.js bridge: navigate, snapshot (a11y tree),|
-  |             | click (CSS or text), type, fill, screenshot, evaluate (JS),   |
-  |             | get_text, press_key, list_tabs, new_tab, close_tab            |
-  +-------------+---------------------------------------------------------------+
-  | memory      | remember (upsert entity + add fact), recall (semantic search),|
-  |             | list_entities (top 20 by mention count)                       |
-  +-------------+---------------------------------------------------------------+
-  | sessions    | list active, get history (with limit), send messages between  |
-  |             | sessions (inter-session communication)                        |
-  +-------------+---------------------------------------------------------------+
-  | cron        | list, add (auto-detects: ISO8601 = one-shot, digits =         |
-  |             | interval, otherwise = cron expression), remove, run, pause,   |
-  |             | resume                                                        |
-  +-------------+---------------------------------------------------------------+
-  | channel_send| Send messages to Telegram, Discord, WhatsApp, Signal.         |
-  |             | Resolves target from explicit ID, session channels, or        |
-  |             | config-level owner ID fallback                                |
-  +-------------+---------------------------------------------------------------+
+  +----------------+---------------------------------------------------------------+
+  | Tool           | Description                                                   |
+  +----------------+---------------------------------------------------------------+
+  | bash           | Cross-platform shell (cmd.exe on Windows, sh on Unix)         |
+  |                | 30s timeout, 100KB output cap, process tree kill on timeout   |
+  +----------------+---------------------------------------------------------------+
+  | file           | read (50K cap), write (auto-mkdir), append, list (with type   |
+  |                | annotation), exists                                           |
+  +----------------+---------------------------------------------------------------+
+  | web_search     | SearXNG provider, configurable result count (default 5)       |
+  +----------------+---------------------------------------------------------------+
+  | browser        | Playwright via Node.js bridge: navigate, snapshot (a11y tree),|
+  |                | click (CSS or text), type, fill, screenshot, evaluate (JS),   |
+  |                | get_text, press_key, list_tabs, new_tab, close_tab            |
+  +----------------+---------------------------------------------------------------+
+  | memory         | remember (upsert entity + add fact), recall (semantic search),|
+  |                | list_entities (top 20 by mention count)                       |
+  +----------------+---------------------------------------------------------------+
+  | sessions       | list active, get history (with limit), send messages between  |
+  |                | sessions (inter-session communication)                        |
+  +----------------+---------------------------------------------------------------+
+  | cron           | list, add (auto-detects: ISO8601 = one-shot, digits =         |
+  |                | interval, otherwise = cron expression), remove, run, pause,   |
+  |                | resume                                                        |
+  +----------------+---------------------------------------------------------------+
+  | channel_send   | Send messages to Telegram, Discord, WhatsApp, Signal.         |
+  |                | Resolves target from explicit ID, session channels, or        |
+  |                | config-level owner ID fallback                                |
+  +----------------+---------------------------------------------------------------+
+  | skill_manage   | Self-improvement: create, patch, edit, delete, list skills.   |
+  |                | Agent's procedural memory -- creates skills after complex     |
+  |                | tasks, patches them on improvement. Protected template skills |
+  |                | (self-reflect, create-skill) cannot be deleted.               |
+  +----------------+---------------------------------------------------------------+
+  | workspace_edit | Self-improvement: read, patch, append workspace prompt files  |
+  |                | (SOUL.md, AGENTS.md, TOOLS.md). Creates .bak backups before  |
+  |                | writes. 8K character cap. Changes take effect next session.   |
+  +----------------+---------------------------------------------------------------+
+  | delegate_task  | Spawn up to 5 parallel subagents, each with its own context,  |
+  |                | tool subset, and 3-iteration tool loop. Results returned as   |
+  |                | XML with <subagent tag="..." status="..."> elements. No       |
+  |                | recursive delegation. IOGuard applied to subagent tool calls. |
+  +----------------+---------------------------------------------------------------+
 ```
 
 The session server executes tools in a loop (up to 5 iterations per message).
@@ -1036,6 +1114,12 @@ Only included if the file exists. Cached with mtime-based invalidation.
   | BOOT.md     | One-time boot instructions executed on gateway startup          |
   +-------------+----------------------------------------------------------------+
 ```
+
+The agent can read and modify SOUL.md, AGENTS.md, and TOOLS.md via the
+`workspace_edit` tool (self-improvement). Writes create `.bak` backups
+automatically and are capped at 8,000 characters to keep the system prompt
+bounded. Changes take effect on the next session -- the current session
+retains its original prompt for stability.
 
 ---
 
@@ -1550,8 +1634,14 @@ SQLite with Ecto. DB lives at `~/.traitee/traitee.db` (dev) or
                                   inter-session (list, history, send -- self-referencing guarded)
         skills/ .................. loader (3-tier: metadata/body/resources, keyword trigger, path traversal
                                   protection, requires check), registry (60s rescan, :persistent_term cache)
+        delegation/ .............. runner (parallel subagent orchestration via Task.async, max 5 subagents,
+                                  3-iteration tool loop, XML-tagged results, IOGuard protected)
         tools/ ................... bash, file, web_search, browser (12 actions), memory, sessions, cron,
-                                  channel_send, dynamic (bash template + script executor, JSON persistence)
+                                  channel_send, skill_manage (self-improvement: create/patch/edit/delete
+                                  skills), workspace_edit (self-improvement: read/patch/append SOUL.md,
+                                  AGENTS.md, TOOLS.md with .bak backups, 8K cap), delegate_task (spawn
+                                  parallel subagents with per-task tool subsets),
+                                  dynamic (bash template + script executor, JSON persistence)
       traitee_web/
         endpoint.ex .............. Phoenix/Bandit on :4000
         router.ex ................ /v1/*, /api/webhook/*, /api/health
