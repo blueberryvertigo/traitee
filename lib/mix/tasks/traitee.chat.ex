@@ -11,6 +11,7 @@ defmodule Mix.Tasks.Traitee.Chat do
   use Mix.Task
 
   alias Traitee.AutoReply.CommandRegistry
+  alias Traitee.CLI.Display
   alias Traitee.Session
   alias Traitee.Session.Server, as: SessionServer
 
@@ -33,14 +34,14 @@ defmodule Mix.Tasks.Traitee.Chat do
     session_id = opts[:session] || default_session_id()
     {:ok, pid} = Session.ensure_started(session_id, :cli)
 
-    IO.puts(banner())
+    IO.puts(Display.chat_banner(session_id))
     loop(session_id, pid, opts)
   end
 
   defp loop(session_id, pid, opts) do
-    case IO.gets("you> ") do
+    case IO.gets(Display.user_prompt()) do
       :eof ->
-        IO.puts("\nGoodbye!")
+        IO.puts(Display.goodbye())
         Session.terminate(session_id)
 
       input ->
@@ -55,16 +56,17 @@ defmodule Mix.Tasks.Traitee.Chat do
             loop(session_id, pid, opts)
 
           true ->
-            IO.write("assistant> ")
+            IO.write(Display.assistant_prefix())
 
             case SessionServer.send_message(pid, input, :cli) do
               {:ok, response} ->
                 IO.puts(response)
 
               {:error, reason} ->
-                IO.puts("[error] #{inspect(reason)}")
+                IO.puts(Display.error_msg(inspect(reason)))
             end
 
+            IO.puts("")
             loop(session_id, pid, opts)
         end
     end
@@ -72,7 +74,7 @@ defmodule Mix.Tasks.Traitee.Chat do
 
   defp handle_command("/quit", session_id, _pid, _opts) do
     Session.terminate(session_id)
-    IO.puts("Goodbye!")
+    IO.puts(Display.goodbye())
     System.halt(0)
   end
 
@@ -80,13 +82,13 @@ defmodule Mix.Tasks.Traitee.Chat do
     Session.terminate(old_session_id)
     new_session_id = default_session_id()
     {:ok, new_pid} = Session.ensure_started(new_session_id, :cli)
-    IO.puts("[system] Conversation reset.")
+    IO.puts(Display.system_msg("Conversation reset."))
     {new_session_id, new_pid}
   end
 
   defp handle_command("/help" <> _, session_id, pid, _opts) do
     help = CommandRegistry.help_text()
-    IO.puts(help <> "\n/quit — Exit the REPL")
+    IO.puts(Display.format_help(help <> "\n/quit — Exit the REPL"))
     {session_id, pid}
   end
 
@@ -100,13 +102,13 @@ defmodule Mix.Tasks.Traitee.Chat do
 
     case CommandRegistry.execute(input, context) do
       {:ok, text} ->
-        IO.puts("[system] #{text}")
+        IO.puts(Display.system_msg(text))
 
       {:error, :unknown_command} ->
-        IO.puts("[system] Unknown command: #{input}. Type /help for commands.")
+        IO.puts(Display.system_msg("Unknown command: #{input}. Type /help for commands."))
 
       {:error, reason} ->
-        IO.puts("[error] #{inspect(reason)}")
+        IO.puts(Display.error_msg(inspect(reason)))
     end
 
     {session_id, pid}
@@ -123,17 +125,5 @@ defmodule Mix.Tasks.Traitee.Chat do
       "" -> "chat-#{System.os_time(:millisecond)}"
       owner_id -> "default:#{owner_id}"
     end
-  end
-
-  defp banner do
-    """
-
-    ╔══════════════════════════════════════╗
-    ║        Traitee Chat v0.1.0          ║
-    ║   Compact AI Assistant Platform     ║
-    ╚══════════════════════════════════════╝
-
-    Type a message to chat. Type /help for commands.
-    """
   end
 end

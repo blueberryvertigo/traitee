@@ -2,6 +2,7 @@ defmodule Traitee.Onboard.Wizard do
   @moduledoc "Interactive onboarding wizard for first-time setup."
 
   alias IO.ANSI
+  alias Traitee.CLI.Display
   alias Traitee.Daemon.Service
   alias Traitee.Secrets.CredentialStore
 
@@ -38,6 +39,23 @@ defmodule Traitee.Onboard.Wizard do
     signal: "phone number in E.164 format (e.g. +15551234567)"
   }
 
+  @total_steps 12
+
+  @step_vibes %{
+    "LLM Provider" => "Time to give your AI a brain.",
+    "Embeddings" => "Because keyword search is so 2015.",
+    "Agent Identity" => "Every hero needs an origin story.",
+    "Messaging Channels" => "Pick your AI's social life.",
+    "Owner Identity" => "Establishing dominance (consensually).",
+    "Cognitive Security" => "Teaching your AI to spot gaslighting.",
+    "Tools" => "With great power tools comes great config.",
+    "Filesystem Security" => "How paranoid do you want to be? (Very.)",
+    "Gateway" => "The front door to your digital kingdom.",
+    "Workspace & Database" => "A cozy home for your AI's memories.",
+    "Connection Test" => "The moment of truth. No pressure.",
+    "Background Service" => "Making it run forever. Like a Spotify playlist."
+  }
+
   def run do
     wipe_previous()
 
@@ -58,7 +76,8 @@ defmodule Traitee.Onboard.Wizard do
   rescue
     _ ->
       puts(
-        "\n#{ANSI.yellow()}Setup interrupted. Run `mix traitee.onboard` to try again.#{ANSI.reset()}"
+        "\n#{ANSI.yellow()}Setup interrupted — no worries! " <>
+          "Run #{ANSI.cyan()}mix traitee.onboard#{ANSI.yellow()} whenever you're ready.#{ANSI.reset()}"
       )
   end
 
@@ -95,15 +114,17 @@ defmodule Traitee.Onboard.Wizard do
 
   defp welcome do
     puts("""
-    #{ANSI.cyan()}#{ANSI.bright()}
-    ╔══════════════════════════════════════╗
-    ║        Welcome to Traitee! 🤖       ║
-    ╚══════════════════════════════════════╝
-    #{ANSI.reset()}
-    Traitee is a personal AI assistant that connects to your
-    favorite messaging platforms with persistent memory.
 
-    Let's get you set up. Press Enter to accept defaults shown in [brackets].
+    #{Display.logo()}
+    #{ANSI.faint()}          Compact AI Operating System#{ANSI.reset()}
+
+    #{ANSI.bright()}Welcome to the Traitee setup wizard!#{ANSI.reset()}
+
+    We're about to build you a personal AI assistant with persistent memory,
+    tool use, and multi-channel superpowers. The whole thing takes ~5 minutes.
+
+    Press Enter to accept defaults shown in #{ANSI.cyan()}[brackets]#{ANSI.reset()}.
+    #{ANSI.faint()}Ctrl+C to bail at any time (no judgment, we'll be here).#{ANSI.reset()}
     """)
 
     %{
@@ -140,7 +161,7 @@ defmodule Traitee.Onboard.Wizard do
 
   defp step_llm_provider(state) do
     puts(heading(state, "LLM Provider"))
-    puts("Which LLM provider do you want to use?\n")
+    puts("Which LLM provider shall power your assistant?\n")
 
     for {key, {_id, name, _}} <- Enum.sort(@providers) do
       puts("  #{key}) #{name}")
@@ -161,7 +182,10 @@ defmodule Traitee.Onboard.Wizard do
     state = configure_model(state, provider_id)
     state = maybe_configure_ollama(state, provider_id)
 
-    puts("#{ANSI.green()}✓ #{provider_name} configured#{ANSI.reset()}\n")
+    puts(
+      "#{ANSI.green()}✓ #{provider_name} configured — your AI has a brain now#{ANSI.reset()}\n"
+    )
+
     advance(%{state | provider: provider_id})
   end
 
@@ -205,11 +229,11 @@ defmodule Traitee.Onboard.Wizard do
       puts(heading(state, "Embeddings"))
 
       puts("""
-      Traitee uses vector embeddings for semantic memory search --
-      finding relevant past conversations by meaning, not just keywords.
+      Embeddings let your AI find past conversations by meaning, not just
+      keywords. It's the difference between "search" and "actually remembering."
 
-      Your LLM provider doesn't support embeddings, but OpenAI's
-      text-embedding-3-small is fast and very cheap (~$0.02 per million tokens).
+      Your LLM provider doesn't do embeddings, but OpenAI's
+      text-embedding-3-small is fast and dirt cheap (~$0.02/million tokens).
       """)
 
       if confirm?("Add an OpenAI API key for embeddings?") do
@@ -232,7 +256,7 @@ defmodule Traitee.Onboard.Wizard do
 
   defp step_agent_identity(state) do
     puts(heading(state, "Agent Identity"))
-    puts("Give your assistant a name and personality.\n")
+    puts("Give your assistant a name and personality. Make it yours.\n")
 
     name = prompt_text("  Bot name [Traitee]", "Traitee")
 
@@ -245,13 +269,13 @@ defmodule Traitee.Onboard.Wizard do
 
     system_prompt = if custom_prompt == "", do: default_prompt, else: custom_prompt
 
-    puts("#{ANSI.green()}✓ Agent: #{name}#{ANSI.reset()}\n")
+    puts("#{ANSI.green()}✓ Say hello to #{name} — a legend is born#{ANSI.reset()}\n")
     advance(%{state | bot_name: name, system_prompt: system_prompt})
   end
 
   defp step_channels(state) do
     puts(heading(state, "Messaging Channels"))
-    puts("Which channels do you want to enable? (comma-separated)\n")
+    puts("Where should your assistant hang out? (comma-separated)\n")
 
     for {key, {_id, name}} <- Enum.sort(@channels) do
       puts("  #{key}) #{name}")
@@ -262,7 +286,7 @@ defmodule Traitee.Onboard.Wizard do
     input = prompt("\nYour choices [0]") |> normalize("0")
 
     if input == "0" do
-      puts("#{ANSI.green()}✓ CLI + WebChat only#{ANSI.reset()}\n")
+      puts("#{ANSI.green()}✓ CLI + WebChat only — the minimalist's choice#{ANSI.reset()}\n")
       advance(state)
     else
       choices =
@@ -282,7 +306,7 @@ defmodule Traitee.Onboard.Wizard do
         end)
 
       configured = Enum.map_join(channel_atoms, ", ", &to_string/1)
-      puts("\n#{ANSI.green()}✓ Channels: #{configured}#{ANSI.reset()}\n")
+      puts("\n#{ANSI.green()}✓ Channels: #{configured} — social butterfly mode#{ANSI.reset()}\n")
       advance(%{state | channels: channel_atoms, channel_configs: configs})
     end
   end
@@ -349,8 +373,8 @@ defmodule Traitee.Onboard.Wizard do
     puts(heading(state, "Owner Identity"))
 
     puts("""
-    Your owner ID identifies you as the admin. It gates commands like
-    /pairing, /doctor, and /cron. It's also used as your default session key.
+    Your owner ID is your admin badge. It gates commands like /pairing,
+    /doctor, and /cron — the stuff you don't want randos touching.
     """)
 
     if state.channels == [] do
@@ -402,11 +426,11 @@ defmodule Traitee.Onboard.Wizard do
     puts(heading(state, "Cognitive Security"))
 
     puts("""
-    Traitee includes an 8-layer security pipeline. The LLM-as-judge is the
-    most powerful layer — it classifies every message for prompt injection,
-    manipulation, and jailbreak attempts in any language or encoding.
+    Traitee has an 8-layer security pipeline — because paranoia is a feature.
+    The LLM-as-judge is the heavyweight: it classifies every inbound message
+    for prompt injection, manipulation, and jailbreak attempts in any language.
 
-    This uses xAI's Grok (fast, non-reasoning). Cost: ~$0.0001/message.
+    Uses xAI's Grok (fast, non-reasoning). Cost: ~$0.0001/message. Bargain.
     """)
 
     state =
@@ -465,13 +489,13 @@ defmodule Traitee.Onboard.Wizard do
     puts(heading(state, "Tools"))
 
     puts("""
-    Traitee can use tools during conversations. Select which to enable:
+    Your AI can use real tools — not just talk about them. Pick its loadout:
 
-      1) bash        — Run shell commands
+      1) bash        — Run shell commands (the classic)
       2) file        — Read/write/search files
       3) web_search  — Search the web (requires API key)
-      4) browser     — Browser automation via Playwright (requires Node.js)
-      5) cron        — Schedule recurring tasks
+      4) browser     — Full browser automation via Playwright (requires Node.js)
+      5) cron        — Schedule recurring tasks (your AI never sleeps)
     """)
 
     defaults = "1,2,5"
@@ -518,7 +542,7 @@ defmodule Traitee.Onboard.Wizard do
       |> Enum.filter(fn {_k, v} -> v end)
       |> Enum.map_join(", ", fn {k, _} -> to_string(k) end)
 
-    puts("\n#{ANSI.green()}✓ Tools: #{enabled}#{ANSI.reset()}\n")
+    puts("\n#{ANSI.green()}✓ Tools: #{enabled} — locked and loaded#{ANSI.reset()}\n")
     advance(state)
   end
 
@@ -526,10 +550,10 @@ defmodule Traitee.Onboard.Wizard do
     puts(heading(state, "Filesystem Security"))
 
     puts("""
-    Traitee's tools can read files, write files, and run shell commands.
-    The filesystem security system controls what they're allowed to do.
+    Your AI has file and shell access. That's powerful — and terrifying.
+    Good news: Traitee's filesystem security keeps it on a leash.
 
-    #{ANSI.bright()}Four layers of protection:#{ANSI.reset()}
+    #{ANSI.bright()}Four layers of protection (because one is never enough):#{ANSI.reset()}
 
       #{ANSI.cyan()}1. I/O guards#{ANSI.reset()} (always on, cannot be disabled)
          Scans tool arguments for sensitive paths before execution.
@@ -762,7 +786,7 @@ defmodule Traitee.Onboard.Wizard do
 
   defp step_gateway(state) do
     puts(heading(state, "Gateway"))
-    puts("The gateway exposes the HTTP API, webhooks, and WebChat.\n")
+    puts("The gateway is how the outside world talks to your AI.\n")
 
     port_s = prompt("  Port [4000]") |> normalize("4000")
     port = parse_int(port_s, 4000)
@@ -806,17 +830,20 @@ defmodule Traitee.Onboard.Wizard do
     puts(heading(state, "Connection Test"))
 
     if confirm?("Send a test message to the LLM?") do
-      puts("  Sending...")
+      puts("  Pinging your AI's brain... #{ANSI.faint()}(fingers crossed)#{ANSI.reset()}")
 
       case Traitee.LLM.Router.complete(%{
              messages: [%{role: "user", content: "Say hello in one sentence."}]
            }) do
         {:ok, resp} ->
-          puts("#{ANSI.green()}✓ LLM responded: #{resp.content}#{ANSI.reset()}\n")
+          puts("#{ANSI.green()}✓ IT'S ALIVE! #{ANSI.reset()}#{resp.content}\n")
 
         {:error, reason} ->
           puts("#{ANSI.red()}✗ Connection failed: #{inspect(reason)}#{ANSI.reset()}")
-          puts("  Fix later in ~/.traitee/config.toml\n")
+
+          puts(
+            "  #{ANSI.faint()}No worries — fix later in ~/.traitee/config.toml#{ANSI.reset()}\n"
+          )
       end
     end
 
@@ -831,11 +858,16 @@ defmodule Traitee.Onboard.Wizard do
     if confirm?("Install Traitee as a #{platform_name} background service?") do
       case Service.install() do
         :ok ->
-          puts("#{ANSI.green()}✓ Service installed#{ANSI.reset()}\n")
+          puts(
+            "#{ANSI.green()}✓ Service installed — it'll outlive your browser tabs#{ANSI.reset()}\n"
+          )
 
         {:error, reason} ->
           puts("#{ANSI.red()}✗ Failed: #{inspect(reason)}#{ANSI.reset()}")
-          puts("  Install manually later: mix traitee.daemon install\n")
+
+          puts(
+            "  #{ANSI.faint()}No sweat — install manually later: mix traitee.daemon install#{ANSI.reset()}\n"
+          )
       end
     end
 
@@ -843,32 +875,41 @@ defmodule Traitee.Onboard.Wizard do
   end
 
   defp summary(state) do
+    channels_text =
+      if state.channels == [], do: "CLI only", else: Enum.join(state.channels, ", ")
+
+    cogsec_text =
+      if state.judge_enabled,
+        do: "LLM judge + full pipeline",
+        else: "regex + pipeline (no judge)"
+
     puts("""
 
-    #{ANSI.bright()}#{ANSI.cyan()}╔══════════════════════════════════════╗
-    ║          Setup Complete! ✓          ║
-    ╚══════════════════════════════════════╝#{ANSI.reset()}
+    #{ANSI.green()}  ████████████████████████ 100%#{ANSI.reset()}
+    #{ANSI.bright()}#{ANSI.green()}  ── Setup Complete! ──────────────────────────────#{ANSI.reset()}
 
-    #{ANSI.bright()}Configuration summary:#{ANSI.reset()}
-      Model:      #{state.model}#{fallback_line(state)}
-      Agent:      #{state.bot_name}
-      Channels:   #{if state.channels == [], do: "CLI only", else: Enum.join(state.channels, ", ")}
-      Owner:      #{state.owner_id || "(not set)"}
-      CogSec:     #{if state.judge_enabled, do: "LLM judge + full pipeline", else: "Regex + pipeline (no judge)"}
-      Filesystem: #{summary_filesystem(state.filesystem)}
-      Gateway:    http://127.0.0.1:#{state.gateway_port}
+    #{ANSI.bright()}Your AI assistant is alive and kicking.#{ANSI.reset()} Here's the rundown:
 
-    #{ANSI.bright()}What's next:#{ANSI.reset()}
-      #{ANSI.cyan()}mix traitee.chat#{ANSI.reset()}         Start a CLI chat session
-      #{ANSI.cyan()}mix traitee.serve#{ANSI.reset()}        Start the gateway server
-      #{ANSI.cyan()}mix traitee.daemon start#{ANSI.reset()} Run as background service
-      #{ANSI.cyan()}mix traitee.doctor#{ANSI.reset()}       Check system health
-      #{ANSI.cyan()}mix traitee.security#{ANSI.reset()}     Audit filesystem security posture
+      #{ANSI.bright()}Model#{ANSI.reset()}:      #{state.model}#{fallback_line(state)}
+      #{ANSI.bright()}Agent#{ANSI.reset()}:      #{state.bot_name}
+      #{ANSI.bright()}Channels#{ANSI.reset()}:   #{channels_text}
+      #{ANSI.bright()}Owner#{ANSI.reset()}:      #{state.owner_id || "#{ANSI.faint()}(not set)#{ANSI.reset()}"}
+      #{ANSI.bright()}Security#{ANSI.reset()}:   #{cogsec_text}
+      #{ANSI.bright()}Filesystem#{ANSI.reset()}: #{summary_filesystem(state.filesystem)}
+      #{ANSI.bright()}Gateway#{ANSI.reset()}:    http://127.0.0.1:#{state.gateway_port}
 
-    Config: #{Traitee.config_path()}
-    Data:   #{Traitee.data_dir()}
+    #{ANSI.yellow()}#{ANSI.bright()}What's next:#{ANSI.reset()}
 
-    #{ANSI.yellow()}#{ANSI.bright()}WARNING: Running `mix traitee.onboard` again will wipe all these values.#{ANSI.reset()}
+      #{ANSI.cyan()}mix traitee.chat#{ANSI.reset()}           Start chatting right now
+      #{ANSI.cyan()}mix traitee.serve#{ANSI.reset()}          Fire up the full gateway
+      #{ANSI.cyan()}mix traitee.daemon start#{ANSI.reset()}   Run as a background service
+      #{ANSI.cyan()}mix traitee.doctor#{ANSI.reset()}         Health check everything
+      #{ANSI.cyan()}mix traitee.security#{ANSI.reset()}       Audit filesystem posture
+
+    #{ANSI.faint()}Config: #{Traitee.config_path()}#{ANSI.reset()}
+    #{ANSI.faint()}Data:   #{Traitee.data_dir()}#{ANSI.reset()}
+
+    #{ANSI.yellow()}Re-running #{ANSI.cyan()}mix traitee.onboard#{ANSI.yellow()} will wipe these values. You've been warned.#{ANSI.reset()}
     """)
 
     state
@@ -1153,7 +1194,22 @@ defmodule Traitee.Onboard.Wizard do
   # -- Helpers --
 
   defp heading(state, text) do
-    "\n#{ANSI.bright()}#{ANSI.cyan()}── Step #{state.step}: #{text} ──#{ANSI.reset()}\n"
+    step = state.step
+    filled = div(step * 24, @total_steps)
+    empty = 24 - filled
+    bar_fill = "#{ANSI.cyan()}#{String.duplicate("█", filled)}#{ANSI.reset()}"
+    bar_rest = "#{ANSI.faint()}#{String.duplicate("░", empty)}#{ANSI.reset()}"
+    pct = div(step * 100, @total_steps)
+    vibe = Map.get(@step_vibes, text, "")
+
+    progress = "  #{bar_fill}#{bar_rest} #{ANSI.faint()}#{pct}%#{ANSI.reset()}"
+    title = "  #{ANSI.bright()}#{ANSI.cyan()}── Step #{step} · #{text} ──#{ANSI.reset()}"
+    subtitle = if vibe != "", do: "  #{ANSI.faint()}#{vibe}#{ANSI.reset()}", else: nil
+
+    ["\n", progress, title, subtitle]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join("\n")
+    |> Kernel.<>("\n")
   end
 
   defp advance(state), do: %{state | step: state.step + 1}
@@ -1205,12 +1261,12 @@ defmodule Traitee.Onboard.Wizard do
 
   defp safety_warning do
     """
-    #{ANSI.yellow()}#{ANSI.bright()}⚠  Security judge skipped#{ANSI.reset()}
+    #{ANSI.yellow()}#{ANSI.bright()}⚠  Security judge skipped — living dangerously, I see#{ANSI.reset()}
     #{ANSI.yellow()}Without the LLM judge, Traitee relies on regex pattern matching only.
-    Attacks using other languages, encodings, or novel techniques won't be caught
-    at the input layer. Other layers (canary, output guard) still active.
+    Creative attacks (other languages, encodings, novel jailbreaks) will slip through.
+    The other layers (canary tokens, output guard) still have your back though.
 
-    Enable later: #{ANSI.cyan()}mix traitee.onboard#{ANSI.reset()}#{ANSI.yellow()}
+    #{ANSI.faint()}Enable later: #{ANSI.cyan()}mix traitee.onboard#{ANSI.reset()}#{ANSI.yellow()}#{ANSI.faint()}
     Or manually: #{ANSI.cyan()}CredentialStore.store(:xai, "api_key", "xai-...")#{ANSI.reset()}
     """
   end

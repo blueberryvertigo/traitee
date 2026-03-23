@@ -7,6 +7,8 @@ defmodule Mix.Tasks.Traitee.Serve do
   """
   use Mix.Task
 
+  alias Traitee.CLI.Display
+
   @shortdoc "Start the Traitee gateway"
 
   @impl true
@@ -31,39 +33,11 @@ defmodule Mix.Tasks.Traitee.Serve do
     Mix.Task.run("app.start")
 
     config = Traitee.Config.all()
-    IO.puts(banner(config))
+    IO.puts(Display.serve_banner(config))
 
     unless iex_running?() do
       Process.sleep(:infinity)
     end
-  end
-
-  defp banner(config) do
-    model = get_in(config, [:agent, :model]) || "not configured"
-    port = get_in(Application.get_env(:traitee, TraiteeWeb.Endpoint, []), [:http, :port]) || 4000
-
-    channels =
-      [:discord, :telegram, :whatsapp, :signal]
-      |> Enum.filter(fn ch -> get_in(config, [:channels, ch, :enabled]) end)
-      |> Enum.map(&to_string/1)
-      |> case do
-        [] -> "none"
-        list -> Enum.join(list, ", ")
-      end
-
-    """
-
-    ╔══════════════════════════════════════╗
-    ║      Traitee Gateway v0.1.0         ║
-    ╚══════════════════════════════════════╝
-
-    Model:    #{model}
-    Channels: #{channels}
-    WebChat:  http://localhost:#{port}/ws
-    API:      http://localhost:#{port}/api
-
-    Gateway running. Press Ctrl+C to stop.
-    """
   end
 
   defp iex_running? do
