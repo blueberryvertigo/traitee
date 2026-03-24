@@ -8,6 +8,7 @@ defmodule Traitee.Security.Pairing do
   @expiry_ms :timer.minutes(10)
   @cleanup_interval_ms :timer.seconds(60)
   @approved_file "approved_senders.json"
+  @pending_file "pending_pairings.json"
 
   # -- Client API --
 
@@ -45,8 +46,9 @@ defmodule Traitee.Security.Pairing do
   @impl true
   def init(_opts) do
     approved = load_approved()
+    pending = load_pending_from_disk()
     schedule_cleanup()
-    {:ok, %{pending: %{}, approved: approved}}
+    {:ok, %{pending: pending, approved: approved}}
   end
 
   @impl true
@@ -67,10 +69,11 @@ defmodule Traitee.Security.Pairing do
           key: key,
           sender_id: sender_id,
           channel: channel_type,
-          timestamp: System.monotonic_time(:millisecond)
+          timestamp: System.system_time(:millisecond)
         }
 
         pending = Map.put(state.pending, code, entry)
+        persist_pending(pending)
         Logger.info("Pairing code #{code} generated for #{sender_id} on #{channel_type}")
         {:reply, {:pending, code}, %{state | pending: pending}}
     end
@@ -78,6 +81,8 @@ defmodule Traitee.Security.Pairing do
 
   @impl true
   def handle_call({:approve, code}, _from, state) do
+    state = sync_pending_from_disk(state)
+
     case Map.pop(state.pending, code) do
       {nil, _} ->
         {:reply, {:error, :not_found}, state}
@@ -85,6 +90,7 @@ defmodule Traitee.Security.Pairing do
       {%{key: key, sender_id: sender_id, channel: channel}, pending} ->
         approved = MapSet.put(state.approved, key)
         persist_approved(approved)
+        persist_pending(pending)
         Logger.info("Sender #{sender_id} approved on #{channel} via code #{code}")
         {:reply, {:ok, key}, %{state | pending: pending, approved: approved}}
     end
@@ -114,18 +120,25 @@ defmodule Traitee.Security.Pairing do
 
   @impl true
   def handle_info(:cleanup, state) do
-    now = System.monotonic_time(:millisecond)
+    now = System.system_time(:millisecond)
 
     pending =
       state.pending
       |> Enum.reject(fn {_code, %{timestamp: ts}} -> now - ts > @expiry_ms end)
       |> Map.new()
 
+    persist_pending(pending)
     schedule_cleanup()
     {:noreply, %{state | pending: pending}}
   end
 
   # -- Private --
+
+  defp sync_pending_from_disk(state) do
+    disk_pending = load_pending_from_disk()
+    merged = Map.merge(disk_pending, state.pending)
+    %{state | pending: merged}
+  end
 
   defp find_pending_code(pending, key) do
     Enum.find_value(pending, fn {code, %{key: k}} ->
@@ -147,6 +160,8 @@ defmodule Traitee.Security.Pairing do
   defp schedule_cleanup do
     Process.send_after(self(), :cleanup, @cleanup_interval_ms)
   end
+
+  # -- Approved persistence --
 
   defp approved_path do
     Path.join(Traitee.data_dir(), @approved_file)
@@ -179,5 +194,61 @@ defmodule Traitee.Security.Pairing do
   defp persist_approved(approved) do
     data = approved |> MapSet.to_list() |> Jason.encode!()
     File.write!(approved_path(), data)
+  end
+
+  # -- Pending persistence --
+
+  defp pending_path do
+    Path.join(Traitee.data_dir(), @pending_file)
+  end
+
+  defp load_pending_from_disk do
+    now = System.system_time(:millisecond)
+
+    case File.read(pending_path()) do
+      {:ok, contents} ->
+        case Jason.decode(contents) do
+          {:ok, map} when is_map(map) ->
+            map
+            |> Enum.reject(fn {_code, entry} ->
+              ts = entry["timestamp"] || 0
+              now - ts > @expiry_ms
+            end)
+            |> Map.new(fn {code, entry} ->
+              {code,
+               %{
+                 key: entry["key"],
+                 sender_id: entry["sender_id"],
+                 channel: String.to_atom(entry["channel"]),
+                 timestamp: entry["timestamp"] || 0
+               }}
+            end)
+
+          _ ->
+            %{}
+        end
+
+      {:error, _} ->
+        %{}
+    end
+  end
+
+  defp persist_pending(pending) do
+    data =
+      pending
+      |> Map.new(fn {code, entry} ->
+        {code,
+         %{
+           "key" => entry.key,
+           "sender_id" => entry.sender_id,
+           "channel" => to_string(entry.channel),
+           "timestamp" => entry.timestamp
+         }}
+      end)
+      |> Jason.encode!()
+
+    File.write!(pending_path(), data)
+  rescue
+    e -> Logger.warning("Failed to persist pending pairings: #{Exception.message(e)}")
   end
 end
