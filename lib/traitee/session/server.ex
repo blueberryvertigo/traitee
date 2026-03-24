@@ -184,6 +184,19 @@ defmodule Traitee.Session.Server do
   end
 
   @impl true
+  def handle_info({:async_tool_result, result}, state) do
+    Logger.debug("[#{state.session_id}] Async subagent results received (#{byte_size(result)} bytes)")
+
+    stm_state =
+      STM.push(state.stm_state, "system", "[Subagent results]\n#{result}", channel: :internal)
+
+    {:noreply, %{state | stm_state: stm_state}}
+  end
+
+  @impl true
+  def handle_info(_msg, state), do: {:noreply, state}
+
+  @impl true
   def terminate(_reason, state) do
     remaining = STM.get_messages(state.stm_state)
 

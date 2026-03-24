@@ -39,4 +39,17 @@ defmodule Traitee.Session do
       [] -> {:error, :not_found}
     end
   end
+
+  @doc """
+  Injects an async tool result into a running session's STM.
+  Used by delegate_task to deliver subagent results in the background.
+  """
+  def inject_async_result(nil, _result), do: :ok
+
+  def inject_async_result(session_id, result) do
+    case Registry.lookup(Traitee.Session.Registry, session_id) do
+      [{pid, _}] -> send(pid, {:async_tool_result, result})
+      [] -> :ok
+    end
+  end
 end

@@ -84,12 +84,23 @@ defmodule Traitee.Tools.DelegateTask do
     if length(tags) != length(Enum.uniq(tags)) do
       {:error, "Duplicate tags found — each subagent must have a unique tag"}
     else
+      session_id = args["_session_id"]
+
       opts =
-        [session_id: args["_session_id"]]
+        [session_id: session_id]
         |> maybe_put(:timeout, args["timeout"])
         |> maybe_put(:system_prompt, args["system_prompt"])
 
-      Runner.run(parsed_tasks, opts)
+      Task.start(fn ->
+        {:ok, results} = Runner.run(parsed_tasks, opts)
+        Traitee.Session.inject_async_result(session_id, results)
+      end)
+
+      tag_list = Enum.join(tags, ", ")
+
+      {:ok,
+       "Subagents dispatched: #{tag_list}. They are working in the background — " <>
+         "results will be available in your next turn. Respond to the user now."}
     end
   end
 
