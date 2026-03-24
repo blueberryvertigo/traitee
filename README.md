@@ -1702,3 +1702,7 @@ mix traitee.doctor           # verify everything works
 ## License
 
 MIT
+
+## Links
+
+[![Hypercommit](https://img.shields.io/badge/Hypercommit-DB2475)](https://hypercommit.com/traitee)
