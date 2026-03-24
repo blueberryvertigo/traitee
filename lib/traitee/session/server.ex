@@ -185,7 +185,9 @@ defmodule Traitee.Session.Server do
 
   @impl true
   def handle_info({:async_tool_result, result}, state) do
-    Logger.debug("[#{state.session_id}] Async subagent results received (#{byte_size(result)} bytes)")
+    Logger.debug(
+      "[#{state.session_id}] Async subagent results received (#{byte_size(result)} bytes)"
+    )
 
     stm_state =
       STM.push(state.stm_state, "system", "[Subagent results]\n#{result}", channel: :internal)
@@ -228,10 +230,14 @@ defmodule Traitee.Session.Server do
   end
 
   defp run_completion_loop(messages, tools, depth, state) do
-    if depth > 5 do
+    if depth > 50 do
       {:ok,
        "I got carried away with tools there. Could you rephrase your question? I'll try to answer directly."}
     else
+      if depth > 0 do
+        Logger.info("[#{state.session_id}] Tool round #{depth}/50")
+      end
+
       request = %{messages: messages}
 
       result =
@@ -267,6 +273,11 @@ defmodule Traitee.Session.Server do
   end
 
   defp execute_tools(tool_calls, state) do
+    Enum.each(tool_calls, fn call ->
+      name = get_in(call, ["function", "name"])
+      Logger.info("[#{state.session_id}] Tool: #{name}")
+    end)
+
     Enum.map(tool_calls, fn call ->
       func = call["function"] || %{}
       name = func["name"]

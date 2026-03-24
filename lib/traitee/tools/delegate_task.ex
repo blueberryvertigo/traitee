@@ -57,7 +57,7 @@ defmodule Traitee.Tools.DelegateTask do
         },
         "timeout" => %{
           "type" => "integer",
-          "description" => "Per-subagent timeout in milliseconds (default: 60000, max: 120000)"
+          "description" => "Per-subagent timeout in milliseconds (default: 300000, max: 600000)"
         },
         "system_prompt" => %{
           "type" => "string",

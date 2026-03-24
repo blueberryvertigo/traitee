@@ -18,9 +18,9 @@ defmodule Traitee.Delegation.Runner do
   require Logger
 
   @max_subagents 5
-  @max_tool_depth 3
-  @default_timeout 120_000
-  @max_timeout 300_000
+  @max_tool_depth 25
+  @default_timeout 300_000
+  @max_timeout 600_000
 
   @subagent_system_prompt """
   You are a focused subagent executing a specific delegated task.
@@ -41,7 +41,7 @@ defmodule Traitee.Delegation.Runner do
   Returns an XML-structured string with results tagged by each task's tag.
 
   Options:
-    - `:timeout` — per-subagent timeout in ms (default: 60_000, max: 120_000)
+    - `:timeout` — per-subagent timeout in ms (default: 300_000, max: 600_000)
     - `:system_prompt` — override the default subagent system prompt
     - `:session_id` — parent session ID (for audit context)
   """
@@ -79,11 +79,11 @@ defmodule Traitee.Delegation.Runner do
       Enum.zip(async_tasks, results)
       |> Enum.map(fn {async_task, yield_result} ->
         case yield_result do
-          {_, {:ok, {tag, {:ok, content}, duration}}} ->
-            format_subagent_result(tag, "completed", content, duration)
+          {_, {:ok, {tag, {:ok, content, tc}, duration}}} ->
+            format_subagent_result(tag, "completed", content, duration, tc)
 
           {_, {:ok, {tag, {:error, reason}, duration}}} ->
-            format_subagent_result(tag, "error", "Error: #{inspect(reason)}", duration)
+            format_subagent_result(tag, "error", "Error: #{inspect(reason)}", duration, 0)
 
           nil ->
             Task.shutdown(async_task, :brutal_kill)
@@ -94,7 +94,8 @@ defmodule Traitee.Delegation.Runner do
               tag,
               "timeout",
               "Subagent timed out after #{elapsed}ms",
-              elapsed
+              elapsed,
+              0
             )
         end
       end)
@@ -116,7 +117,7 @@ defmodule Traitee.Delegation.Runner do
   end
 
   defp run_subagent(tag, description, tool_names, system_prompt, parent_session_id) do
-    Logger.debug("[delegation] Starting subagent: #{tag}")
+    Logger.info("[subagent:#{tag}] Starting")
 
     tools = filter_tools(tool_names)
 
@@ -125,19 +126,23 @@ defmodule Traitee.Delegation.Runner do
       %{role: "user", content: description}
     ]
 
-    subagent_loop(messages, tools, 0, tag, parent_session_id)
+    subagent_loop(messages, tools, 0, 0, tag, parent_session_id)
   end
 
-  defp subagent_loop(messages, tools, depth, tag, session_id) do
+  defp subagent_loop(messages, tools, depth, tool_count, tag, session_id) do
     if depth > @max_tool_depth do
+      Logger.info("[subagent:#{tag}] Max depth reached (#{tool_count} tool calls)")
+
       content =
         Enum.find_value(Enum.reverse(messages), "Task completed (max tool depth reached).", fn
           %{role: "assistant", content: c} when is_binary(c) and c != "" -> c
           _ -> nil
         end)
 
-      {:ok, content}
+      {:ok, content, tool_count}
     else
+      Logger.info("[subagent:#{tag}] Thinking... (round #{depth + 1}/#{@max_tool_depth})")
+
       request = %{messages: messages}
 
       result =
@@ -150,29 +155,36 @@ defmodule Traitee.Delegation.Runner do
       case result do
         {:ok, %{tool_calls: tool_calls, content: content}}
         when is_list(tool_calls) and tool_calls != [] ->
-          tool_results = execute_subagent_tools(tool_calls, tag, session_id)
+          new_count = tool_count + length(tool_calls)
+          tool_results = execute_subagent_tools(tool_calls, tag, session_id, tool_count)
 
           updated =
             messages ++
               [%{role: "assistant", content: content, tool_calls: tool_calls}] ++
               tool_results
 
-          subagent_loop(updated, tools, depth + 1, tag, session_id)
+          subagent_loop(updated, tools, depth + 1, new_count, tag, session_id)
 
         {:ok, %{content: content}} ->
-          {:ok, content}
+          Logger.info("[subagent:#{tag}] Done (#{tool_count} tool calls)")
+          {:ok, content, tool_count}
 
         {:error, reason} ->
+          Logger.info("[subagent:#{tag}] Error: #{inspect(reason)}")
           {:error, reason}
       end
     end
   end
 
-  defp execute_subagent_tools(tool_calls, tag, session_id) do
-    Enum.map(tool_calls, fn call ->
+  defp execute_subagent_tools(tool_calls, tag, session_id, offset) do
+    tool_calls
+    |> Enum.with_index(offset + 1)
+    |> Enum.map(fn {call, idx} ->
       func = call["function"] || %{}
       tool_name = func["name"]
       args = parse_args(func["arguments"])
+
+      Logger.info("[subagent:#{tag}] Tool #{idx}/#{@max_tool_depth * 2}: #{tool_name}")
 
       args_with_context =
         Map.put(args, "_session_id", "subagent:#{tag}:#{session_id || "unknown"}")
@@ -217,11 +229,11 @@ defmodule Traitee.Delegation.Runner do
 
   defp filter_tools(_), do: []
 
-  defp format_subagent_result(tag, status, content, duration_ms) do
+  defp format_subagent_result(tag, status, content, duration_ms, tool_calls) do
     escaped_content = escape_xml(content || "")
     escaped_tag = escape_xml(tag)
 
-    ~s[  <subagent tag="#{escaped_tag}" status="#{status}" duration_ms="#{duration_ms}">\n] <>
+    ~s[  <subagent tag="#{escaped_tag}" status="#{status}" duration_ms="#{duration_ms}" tool_calls="#{tool_calls}">\n] <>
       "    #{escaped_content}\n" <>
       "  </subagent>"
   end

@@ -351,7 +351,7 @@ defmodule Traitee.Workspace do
       - `tag` — Unique identifier (e.g. "research", "code-review", "testing")
       - `description` — The full task description for the subagent
       - `tools` — Array of tool names the subagent can use (e.g. `["bash", "file"]`)
-    - `timeout` — Optional per-subagent timeout in ms (default: 60000, max: 120000)
+    - `timeout` — Optional per-subagent timeout in ms (default: 300000, max: 600000)
 
     ### Results Format
 
