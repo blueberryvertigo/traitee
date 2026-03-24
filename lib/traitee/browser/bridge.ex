@@ -27,6 +27,8 @@ defmodule Traitee.Browser.Bridge do
 
   @impl true
   def init(_opts) do
+    Process.flag(:trap_exit, true)
+
     state = %__MODULE__{
       port: nil,
       buffer: "",
@@ -39,7 +41,14 @@ defmodule Traitee.Browser.Bridge do
 
   @impl true
   def handle_call({:command, action, params}, from, state) do
-    state = ensure_port(state)
+    state =
+      try do
+        ensure_port(state)
+      rescue
+        e ->
+          Logger.error("Browser bridge failed to start: #{Exception.message(e)}")
+          state
+      end
 
     if state.port == nil do
       {:reply, {:error, "Browser bridge failed to start"}, state}
@@ -48,12 +57,19 @@ defmodule Traitee.Browser.Bridge do
       state = %{state | cmd_counter: cmd_id}
 
       command = Jason.encode!(%{id: cmd_id, action: to_string(action), params: params})
-      Port.command(state.port, command <> "\n")
 
-      timer_ref = Process.send_after(self(), {:timeout, cmd_id}, @default_timeout)
-      pending = Map.put(state.pending, cmd_id, {from, timer_ref})
+      try do
+        Port.command(state.port, command <> "\n")
 
-      {:noreply, %{state | pending: pending}}
+        timer_ref = Process.send_after(self(), {:timeout, cmd_id}, @default_timeout)
+        pending = Map.put(state.pending, cmd_id, {from, timer_ref})
+
+        {:noreply, %{state | pending: pending}}
+      rescue
+        e ->
+          Logger.error("Browser bridge port write failed: #{inspect(e)}")
+          {:reply, {:error, "Browser bridge crashed — port closed"}, %{state | port: nil}}
+      end
     end
   end
 
@@ -77,14 +93,19 @@ defmodule Traitee.Browser.Bridge do
   end
 
   @impl true
+  def handle_info({:EXIT, port, reason}, %{port: port} = state) do
+    Logger.warning("Browser bridge port exited: #{inspect(reason)}")
+    drain_pending(state.pending, "Browser bridge port died (#{inspect(reason)})")
+    {:noreply, %{state | port: nil, buffer: "", pending: %{}}}
+  end
+
+  @impl true
+  def handle_info({:EXIT, _other, _reason}, state), do: {:noreply, state}
+
+  @impl true
   def handle_info({port, {:exit_status, code}}, %{port: port} = state) do
-    Logger.warning("Browser bridge exited with code #{code}")
-
-    for {_id, {from, timer_ref}} <- state.pending do
-      Process.cancel_timer(timer_ref)
-      GenServer.reply(from, {:error, "Browser bridge crashed (exit code #{code})"})
-    end
-
+    Logger.warning("Browser bridge process exited with code #{code}")
+    drain_pending(state.pending, "Browser bridge crashed (exit code #{code})")
     {:noreply, %{state | port: nil, buffer: "", pending: %{}}}
   end
 
@@ -118,8 +139,43 @@ defmodule Traitee.Browser.Bridge do
     :ok
   end
 
+  @ready_timeout 5_000
+
+  defp wait_for_ready(port) do
+    receive do
+      {^port, {:data, data}} ->
+        case Jason.decode(data) do
+          {:ok, %{"id" => 0, "ok" => true}} -> :ok
+          _ -> {:error, "unexpected startup message: #{inspect(data)}"}
+        end
+
+      {^port, {:exit_status, code}} ->
+        {:error, "node exited with code #{code} during startup"}
+
+      {:EXIT, ^port, reason} ->
+        {:error, "port crashed during startup: #{inspect(reason)}"}
+    after
+      @ready_timeout ->
+        {:error, "bridge did not send ready signal within #{@ready_timeout}ms"}
+    end
+  end
+
+  defp safely_close_port(port) do
+    Port.close(port)
+  rescue
+    _ -> :ok
+  end
+
+  defp drain_pending(pending, reason) do
+    for {_id, {from, timer_ref}} <- pending do
+      Process.cancel_timer(timer_ref)
+      GenServer.reply(from, {:error, reason})
+    end
+  end
+
   defp ensure_port(%{port: nil} = state) do
-    bridge_path = bridge_script_path()
+    bridge_dir = bridge_dir()
+    bridge_path = Path.join(bridge_dir, "bridge.js")
     node_bin = System.find_executable("node")
 
     cond do
@@ -131,36 +187,49 @@ defmodule Traitee.Browser.Bridge do
         Logger.error("Browser bridge script not found at #{bridge_path}")
         state
 
+      not File.dir?(Path.join(bridge_dir, "node_modules")) ->
+        Logger.error(
+          "Browser bridge dependencies not installed. Run: cd #{bridge_dir} && npm install && npx playwright install chromium"
+        )
+
+        state
+
       true ->
-        node_modules = Path.join(Path.dirname(bridge_path), "node_modules")
-
-        unless File.dir?(node_modules) do
-          Logger.warning("Running npm install for browser bridge...")
-          System.cmd("npm", ["install"], cd: Path.dirname(bridge_path))
-        end
-
         port =
           Port.open({:spawn_executable, node_bin}, [
             :binary,
             :exit_status,
             :use_stdio,
             {:args, [bridge_path]},
-            {:cd, Path.dirname(bridge_path)},
-            {:env, []}
+            {:cd, bridge_dir}
           ])
 
-        Logger.info("Browser bridge started (port: #{inspect(port)})")
-        %{state | port: port, buffer: ""}
+        case wait_for_ready(port) do
+          :ok ->
+            Logger.info("Browser bridge ready (port: #{inspect(port)})")
+            %{state | port: port, buffer: ""}
+
+          {:error, reason} ->
+            Logger.error("Browser bridge failed to start: #{reason}")
+            safely_close_port(port)
+            state
+        end
     end
   end
 
   defp ensure_port(state), do: state
 
-  defp bridge_script_path do
-    app_dir = Application.app_dir(:traitee, "priv")
-    Path.join([app_dir, "browser", "bridge.js"])
+  defp bridge_dir do
+    source = Path.join([File.cwd!(), "priv", "browser"])
+
+    if File.dir?(source) do
+      source
+    else
+      app_dir = Application.app_dir(:traitee, "priv")
+      Path.join(app_dir, "browser")
+    end
   rescue
-    _ -> Path.join([File.cwd!(), "priv", "browser", "bridge.js"])
+    _ -> Path.join([File.cwd!(), "priv", "browser"])
   end
 
   defp split_lines(buffer) do

@@ -19,8 +19,8 @@ defmodule Traitee.Delegation.Runner do
 
   @max_subagents 5
   @max_tool_depth 3
-  @default_timeout 60_000
-  @max_timeout 120_000
+  @default_timeout 120_000
+  @max_timeout 300_000
 
   @subagent_system_prompt """
   You are a focused subagent executing a specific delegated task.

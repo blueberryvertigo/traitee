@@ -27,30 +27,6 @@ async function getActivePageId() {
   return null;
 }
 
-function formatAccessibilityNode(node, indent = 0) {
-  if (!node) return "";
-  const lines = [];
-  const pad = "  ".repeat(indent);
-  const role = node.role || "none";
-  const name = node.name ? ` "${node.name}"` : "";
-  const value = node.value ? ` value="${node.value}"` : "";
-  const checked = node.checked !== undefined ? ` checked=${node.checked}` : "";
-  const selected = node.selected !== undefined ? ` selected=${node.selected}` : "";
-  const disabled = node.disabled ? " disabled" : "";
-  const expanded = node.expanded !== undefined ? ` expanded=${node.expanded}` : "";
-
-  if (role !== "none" && role !== "generic") {
-    lines.push(`${pad}[${role}]${name}${value}${checked}${selected}${disabled}${expanded}`);
-  }
-
-  if (node.children) {
-    for (const child of node.children) {
-      lines.push(formatAccessibilityNode(child, indent + (role !== "none" && role !== "generic" ? 1 : 0)));
-    }
-  }
-  return lines.filter(Boolean).join("\n");
-}
-
 const actions = {
   async navigate({ url, pageId, timeout = 30000 }) {
     const b = await ensureBrowser();
@@ -78,11 +54,10 @@ const actions = {
     const id = pageId || (await getActivePageId());
     if (!id) throw new Error("No active page");
     const page = await getPage(id);
-    const tree = await page.accessibility.snapshot();
-    const formatted = tree ? formatAccessibilityNode(tree) : "(empty page)";
+    const snapshot = await page.locator("body").ariaSnapshot();
     const url = page.url();
     const title = await page.title();
-    return { pageId: id, url, title, snapshot: formatted };
+    return { pageId: id, url, title, snapshot: snapshot || "(empty page)" };
   },
 
   async click({ selector, text, pageId, timeout = 5000 }) {
@@ -238,4 +213,4 @@ process.on("SIGTERM", async () => {
   process.exit(0);
 });
 
-process.stderr.write("browser-bridge ready\n");
+process.stdout.write(JSON.stringify({ id: 0, ok: true, result: { status: "ready" } }) + "\n");

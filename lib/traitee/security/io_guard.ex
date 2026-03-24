@@ -154,6 +154,18 @@ defmodule Traitee.Security.IOGuard do
       })
 
       {:error, "Security check failed — operation denied (fail-closed)"}
+  catch
+    :exit, reason ->
+      formatted = inspect(reason, limit: 200)
+      Logger.error("[IOGuard] Fail-closed (exit) in #{tool_name}: #{formatted}")
+
+      emit_audit(:io_guard_crash, %{
+        tool: tool_name,
+        decision: :deny,
+        reason: "fail-closed (exit): #{formatted}"
+      })
+
+      {:error, "Tool unavailable — #{tool_name} process crashed"}
   end
 
   # --- Input checking ---
