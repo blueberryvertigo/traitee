@@ -54,8 +54,17 @@ defmodule Traitee.Context.Engine do
       reminders: reminder_msgs
     }
 
+    channel = opts[:channel]
+
     messages =
-      build_message_list(system_prompt, skills_section, tasks_section, sections, current_message)
+      build_message_list(
+        system_prompt,
+        skills_section,
+        tasks_section,
+        sections,
+        current_message,
+        channel
+      )
 
     log_budget_summary(budget)
     {messages, budget}
@@ -342,7 +351,7 @@ defmodule Traitee.Context.Engine do
 
   # -- Message list assembly --
 
-  defp build_message_list(system_prompt, skills_section, tasks_section, sections, current_msg) do
+  defp build_message_list(system_prompt, skills_section, tasks_section, sections, current_msg, channel) do
     messages = []
 
     sys_content =
@@ -362,7 +371,8 @@ defmodule Traitee.Context.Engine do
       messages ++
         sections.ltm ++ sections.mtm ++ sections.stm ++ sections.tools ++ sections.reminders
 
-    messages ++ [%{role: "user", content: current_msg}]
+    tagged_msg = tag_channel("user", current_msg, channel)
+    messages ++ [%{role: "user", content: tagged_msg}]
   end
 
   # -- Search helpers --

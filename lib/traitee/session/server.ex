@@ -249,7 +249,8 @@ defmodule Traitee.Session.Server do
         sanitized_text,
         tools: if(tools != [], do: tools, else: nil),
         message_count: state.message_count,
-        has_recent_threats: has_recent_threats
+        has_recent_threats: has_recent_threats,
+        channel: channel
       )
 
     stm_state = STM.push(state.stm_state, "user", sanitized_text, channel: channel)
