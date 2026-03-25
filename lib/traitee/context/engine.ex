@@ -32,6 +32,7 @@ defmodule Traitee.Context.Engine do
       )
 
     {skills_section, budget} = assemble_skills_summary(budget)
+    {tasks_section, budget} = assemble_active_tasks(session_id, budget)
     {ltm_msgs, budget} = assemble_ltm(session_id, stm_state, current_message, budget)
     {mtm_msgs, budget} = assemble_mtm(session_id, current_message, budget)
 
@@ -54,7 +55,7 @@ defmodule Traitee.Context.Engine do
     }
 
     messages =
-      build_message_list(system_prompt, skills_section, sections, current_message)
+      build_message_list(system_prompt, skills_section, tasks_section, sections, current_message)
 
     log_budget_summary(budget)
     {messages, budget}
@@ -171,6 +172,22 @@ defmodule Traitee.Context.Engine do
 
     prev = Map.get(budget.usage, :skills, 0)
     {msgs, Budget.record_usage(budget, :skills, prev + used)}
+  end
+
+  # -- Active Tasks --
+
+  defp assemble_active_tasks(session_id, budget) do
+    tasks = Traitee.Tools.TaskTracker.active_tasks(session_id)
+
+    if tasks == [] do
+      {nil, budget}
+    else
+      lines =
+        Enum.map(tasks, fn t -> "- [#{t.status}] #{t.id}: #{t.content}" end)
+
+      text = "[Active Tasks]\n#{Enum.join(lines, "\n")}"
+      {text, budget}
+    end
   end
 
   # -- LTM with hybrid search + query expansion --
@@ -324,11 +341,11 @@ defmodule Traitee.Context.Engine do
 
   # -- Message list assembly --
 
-  defp build_message_list(system_prompt, skills_section, sections, current_msg) do
+  defp build_message_list(system_prompt, skills_section, tasks_section, sections, current_msg) do
     messages = []
 
     sys_content =
-      [system_prompt, skills_section]
+      [system_prompt, skills_section, tasks_section]
       |> Enum.reject(&is_nil/1)
       |> Enum.reject(&(&1 == ""))
       |> Enum.join("\n\n")

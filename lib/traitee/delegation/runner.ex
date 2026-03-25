@@ -12,6 +12,7 @@ defmodule Traitee.Delegation.Runner do
   """
 
   alias IO.ANSI
+  alias Traitee.ActivityLog
   alias Traitee.LLM.Router, as: LLMRouter
   alias Traitee.Security.IOGuard
   alias Traitee.Tools.Registry, as: ToolRegistry
@@ -58,6 +59,12 @@ defmodule Traitee.Delegation.Runner do
     quiet = Keyword.get(opts, :quiet, false)
 
     started_at = System.monotonic_time(:millisecond)
+    tags = Enum.map(tasks, & &1.tag)
+
+    ActivityLog.record(session_id, :subagent_dispatch, %{
+      tags: tags,
+      count: length(tasks)
+    })
 
     async_tasks =
       Enum.map(tasks, fn task ->
@@ -65,18 +72,29 @@ defmodule Traitee.Delegation.Runner do
           task_started = System.monotonic_time(:millisecond)
           max_calls = clamp_tool_depth(task[:max_tool_calls])
 
-          result =
-            run_subagent(
-              task.tag,
-              task.description,
-              task.tools,
-              system_prompt,
-              session_id,
-              max_calls,
-              quiet
-            )
+          ctx = %{
+            tag: task.tag,
+            session_id: session_id,
+            max_calls: max_calls,
+            quiet: quiet
+          }
+
+          result = run_subagent(task.description, task.tools, system_prompt, ctx)
 
           duration = System.monotonic_time(:millisecond) - task_started
+
+          status =
+            case result do
+              {:ok, _, _} -> :completed
+              {:error, _} -> :error
+            end
+
+          ActivityLog.record(session_id, :subagent_complete, %{
+            tag: task.tag,
+            status: status,
+            duration_ms: duration
+          })
+
           {task.tag, result, duration}
         end)
       end)
@@ -124,7 +142,8 @@ defmodule Traitee.Delegation.Runner do
     {:ok, String.trim(xml)}
   end
 
-  defp run_subagent(tag, description, tool_names, system_prompt, parent_sid, max_calls, quiet) do
+  defp run_subagent(description, tool_names, system_prompt, ctx) do
+    %{tag: tag, max_calls: max_calls, quiet: quiet} = ctx
     status_log("▶ [#{tag}] Starting (#{max_calls} tool rounds)", quiet)
 
     tools = filter_tools(tool_names)
@@ -140,10 +159,13 @@ defmodule Traitee.Delegation.Runner do
       %{role: "user", content: description}
     ]
 
-    subagent_loop(messages, tools, 0, 0, tag, parent_sid, max_calls, quiet)
+    subagent_loop(messages, tools, %{depth: 0, tool_count: 0}, ctx)
   end
 
-  defp subagent_loop(messages, tools, depth, tool_count, tag, session_id, max_calls, quiet) do
+  defp subagent_loop(messages, tools, progress, ctx) do
+    %{tag: tag, max_calls: max_calls, quiet: quiet, session_id: session_id} = ctx
+    %{depth: depth, tool_count: tool_count} = progress
+
     if depth > max_calls do
       status_log("⚠ [#{tag}] Max depth — #{tool_count} tool calls", quiet)
 
@@ -192,7 +214,7 @@ defmodule Traitee.Delegation.Runner do
               updated
             end
 
-          subagent_loop(updated, tools, depth + 1, new_count, tag, session_id, max_calls, quiet)
+          subagent_loop(updated, tools, %{depth: depth + 1, tool_count: new_count}, ctx)
 
         {:ok, %{content: content}} ->
           status_log("✓ [#{tag}] Done — #{tool_count} tool calls", quiet)

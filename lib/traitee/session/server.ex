@@ -13,6 +13,7 @@ defmodule Traitee.Session.Server do
   use GenServer, restart: :transient
 
   alias IO.ANSI
+  alias Traitee.ActivityLog
   alias Traitee.Context.{Continuity, Engine}
   alias Traitee.LLM.Router, as: LLMRouter
   alias Traitee.Memory.Compactor
@@ -42,14 +43,29 @@ defmodule Traitee.Session.Server do
   end
 
   @doc """
-  Sends a user message through the full pipeline:
+  Sends a user message through the full pipeline (synchronous):
   STM -> Context Engine -> LLM -> Tool loop -> Response
 
   Accepts optional keyword opts:
     - reply_to: channel-specific delivery target (e.g. Telegram chat_id)
   """
   def send_message(pid, text, channel, opts \\ []) do
-    GenServer.call(pid, {:message, text, channel, opts}, 120_000)
+    GenServer.call(pid, {:message, text, channel, opts}, 300_000)
+  end
+
+  @doc """
+  Async version of `send_message/4`. Sends progress heartbeats and the
+  final response to the caller via regular messages:
+
+    - `{:session_progress, ref, info}` — emitted each tool-loop round
+    - `{:session_response, ref, {:ok, text} | {:error, reason}}` — final result
+
+  Returns a unique `ref` the caller uses to match messages.
+  """
+  def send_message_streaming(pid, text, channel, opts \\ []) do
+    ref = make_ref()
+    GenServer.cast(pid, {:message_stream, text, channel, opts, self(), ref})
+    ref
   end
 
   @doc """
@@ -106,63 +122,8 @@ defmodule Traitee.Session.Server do
 
   @impl true
   def handle_call({:message, text, channel, opts}, _from, state) do
-    state = track_channel(state, channel, opts)
-
-    %{sanitized: sanitized_text, threats: regex_threats} = Sanitizer.sanitize(text)
-
-    judge_threats =
-      if Judge.enabled?() do
-        {:ok, verdict} = Judge.evaluate(text)
-        Judge.to_threats(verdict)
-      else
-        []
-      end
-
-    all_threats = regex_threats ++ judge_threats
-    has_recent_threats = all_threats != []
-
-    if all_threats != [] do
-      ThreatTracker.record_all(state.session_id, all_threats)
-
-      Logger.warning(
-        "[#{state.session_id}] input threats: #{inspect(Enum.map(all_threats, & &1.pattern_name))}"
-      )
-    end
-
-    stm_state = STM.push(state.stm_state, "user", sanitized_text, channel: channel)
-    state = %{state | stm_state: stm_state, message_count: state.message_count + 1}
-
-    tools = ToolRegistry.tool_schemas()
-
-    {messages, _budget} =
-      Engine.assemble(
-        state.session_id,
-        stm_state,
-        sanitized_text,
-        tools: if(tools != [], do: tools, else: nil),
-        message_count: state.message_count,
-        has_recent_threats: has_recent_threats
-      )
-
-    case run_completion_loop(messages, tools, state) do
-      {:ok, response_text} ->
-        response_text = apply_output_guard(state.session_id, response_text)
-
-        stm_state = STM.push(state.stm_state, "assistant", response_text, channel: channel)
-        state = %{state | stm_state: stm_state, message_count: state.message_count + 1}
-
-        stm_state = maybe_push_delegation_anchor(stm_state, response_text)
-        state = %{state | stm_state: stm_state}
-
-        Continuity.persist_session(state.session_id, %{
-          message_count: state.message_count
-        })
-
-        {:reply, {:ok, response_text}, state}
-
-      {:error, reason} ->
-        {:reply, {:error, reason}, state}
-    end
+    {result, state} = process_message(text, channel, opts, state, _notify = nil)
+    {:reply, result, state}
   end
 
   @impl true
@@ -212,6 +173,13 @@ defmodule Traitee.Session.Server do
   end
 
   @impl true
+  def handle_cast({:message_stream, text, channel, opts, caller, ref}, state) do
+    {result, state} = process_message(text, channel, opts, state, {caller, ref})
+    send(caller, {:session_response, ref, result})
+    {:noreply, state}
+  end
+
+  @impl true
   def handle_info({:delegation_dispatched, count}, state) do
     {:noreply, %{state | delegations_expected: state.delegations_expected + count}}
   end
@@ -247,6 +215,66 @@ defmodule Traitee.Session.Server do
 
   # -- Private --
 
+  defp process_message(text, channel, opts, state, notify) do
+    state = track_channel(state, channel, opts)
+
+    %{sanitized: sanitized_text, threats: regex_threats} = Sanitizer.sanitize(text)
+
+    judge_threats =
+      if Judge.enabled?() do
+        {:ok, verdict} = Judge.evaluate(text)
+        Judge.to_threats(verdict)
+      else
+        []
+      end
+
+    all_threats = regex_threats ++ judge_threats
+    has_recent_threats = all_threats != []
+
+    if all_threats != [] do
+      ThreatTracker.record_all(state.session_id, all_threats)
+
+      Logger.warning(
+        "[#{state.session_id}] input threats: #{inspect(Enum.map(all_threats, & &1.pattern_name))}"
+      )
+    end
+
+    stm_state = STM.push(state.stm_state, "user", sanitized_text, channel: channel)
+    state = %{state | stm_state: stm_state, message_count: state.message_count + 1}
+
+    tools = ToolRegistry.tool_schemas()
+
+    {messages, _budget} =
+      Engine.assemble(
+        state.session_id,
+        stm_state,
+        sanitized_text,
+        tools: if(tools != [], do: tools, else: nil),
+        message_count: state.message_count,
+        has_recent_threats: has_recent_threats
+      )
+
+    case run_completion_loop(messages, tools, state, notify) do
+      {:ok, response_text} ->
+        response_text = apply_output_guard(state.session_id, response_text)
+
+        stm_state = STM.push(state.stm_state, "assistant", response_text, channel: channel)
+        state = %{state | stm_state: stm_state, message_count: state.message_count + 1}
+
+        stm_state = maybe_push_delegation_anchor(stm_state, response_text)
+        state = %{state | stm_state: stm_state}
+
+        Continuity.persist_session(state.session_id, %{
+          message_count: state.message_count
+        })
+
+        {{:ok, response_text}, state}
+
+      {:error, reason} ->
+        {{:error, reason}, state}
+    end
+  end
+
   defp apply_output_guard(session_id, text) do
     if Cognitive.enabled?() do
       case OutputGuard.check(session_id, text) do
@@ -259,11 +287,11 @@ defmodule Traitee.Session.Server do
     end
   end
 
-  defp run_completion_loop(messages, tools, %__MODULE__{} = state) do
-    run_completion_loop(messages, tools, 0, state)
+  defp run_completion_loop(messages, tools, %__MODULE__{} = state, notify) do
+    run_completion_loop(messages, tools, 0, state, notify)
   end
 
-  defp run_completion_loop(messages, tools, depth, state) do
+  defp run_completion_loop(messages, tools, depth, state, notify) do
     if depth > 50 do
       {:ok,
        "I got carried away with tools there. Could you rephrase your question? I'll try to answer directly."}
@@ -272,7 +300,11 @@ defmodule Traitee.Session.Server do
         IO.puts("#{ANSI.faint()}#{ANSI.blue()}  ⟳ Round #{depth}/50#{ANSI.reset()}")
       end
 
+      notify_progress(notify, %{type: :round, depth: depth})
+
       request = %{messages: messages}
+
+      llm_started = System.monotonic_time(:millisecond)
 
       result =
         if tools != [] && tools != nil do
@@ -281,9 +313,15 @@ defmodule Traitee.Session.Server do
           LLMRouter.complete(request)
         end
 
+      llm_latency = System.monotonic_time(:millisecond) - llm_started
+      ActivityLog.record(state.session_id, :llm_call, %{latency_ms: llm_latency, depth: depth})
+
       case result do
         {:ok, %{tool_calls: tool_calls, content: content}}
         when is_list(tool_calls) and tool_calls != [] ->
+          tool_names = Enum.map(tool_calls, &get_in(&1, ["function", "name"]))
+          notify_progress(notify, %{type: :tools, names: tool_names})
+
           tool_results = execute_tools(tool_calls, state)
 
           if only_delegation?(tool_calls) do
@@ -302,7 +340,7 @@ defmodule Traitee.Session.Server do
                 tool_results ++
                 tool_reminder
 
-            run_completion_loop(updated_messages, tools, depth + 1, state)
+            run_completion_loop(updated_messages, tools, depth + 1, state, notify)
           end
 
         {:ok, %{content: content}} ->
@@ -313,6 +351,9 @@ defmodule Traitee.Session.Server do
       end
     end
   end
+
+  defp notify_progress(nil, _info), do: :ok
+  defp notify_progress({pid, ref}, info), do: send(pid, {:session_progress, ref, info})
 
   defp execute_tools(tool_calls, state) do
     Enum.each(tool_calls, fn call ->
@@ -333,7 +374,17 @@ defmodule Traitee.Session.Server do
           if name == "channel_send", do: Map.put(a, "_session_channels", state.channels), else: a
         end)
 
+      started = System.monotonic_time(:millisecond)
       result = guarded_execute(name, args_with_context, state.session_id)
+      duration = System.monotonic_time(:millisecond) - started
+
+      status = if String.starts_with?(result, "Error:"), do: :error, else: :ok
+
+      ActivityLog.record(state.session_id, :tool_call, %{
+        name: name,
+        status: status,
+        duration_ms: duration
+      })
 
       %{
         role: "tool",

@@ -12,6 +12,8 @@ defmodule Traitee.Application do
     Traitee.Security.Canary.init()
     Traitee.Security.Filesystem.init()
     Traitee.Memory.Vector.init()
+    Traitee.Tools.TaskTracker.init()
+    Traitee.ActivityLog.init()
 
     children = [
       Traitee.Repo,

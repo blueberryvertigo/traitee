@@ -14,8 +14,11 @@ defmodule Mix.Tasks.Traitee.Chat do
   alias Traitee.CLI.Display
   alias Traitee.Session
   alias Traitee.Session.Server, as: SessionServer
+  alias Traitee.Tools.TaskTracker
 
   require Logger
+
+  @progress_timeout 60_000
 
   @shortdoc "Start an interactive chat REPL"
 
@@ -60,17 +63,35 @@ defmodule Mix.Tasks.Traitee.Chat do
             loop(session_id, pid, opts)
 
           true ->
-            case SessionServer.send_message(pid, input, :cli) do
+            ref = SessionServer.send_message_streaming(pid, input, :cli)
+            mon = Process.monitor(pid)
+
+            case await_streaming_response(ref, mon, session_id) do
               {:ok, response} ->
+                Process.demonitor(mon, [:flush])
                 IO.write(Display.assistant_prefix())
                 IO.puts("#{IO.ANSI.white()}#{response}#{IO.ANSI.reset()}")
+                IO.puts("")
+                loop(session_id, pid, opts)
 
               {:error, reason} ->
+                Process.demonitor(mon, [:flush])
                 IO.puts(Display.error_msg(inspect(reason)))
-            end
+                IO.puts("")
+                loop(session_id, pid, opts)
 
-            IO.puts("")
-            loop(session_id, pid, opts)
+              :timeout ->
+                Process.demonitor(mon, [:flush])
+                IO.puts(Display.error_msg("Response timed out (no activity)."))
+                IO.puts("")
+                loop(session_id, pid, opts)
+
+              {:crashed, reason} ->
+                IO.puts(Display.error_msg("Session crashed: #{inspect(reason)}"))
+                {:ok, new_pid} = Session.ensure_started(session_id, :cli)
+                IO.puts("")
+                loop(session_id, new_pid, opts)
+            end
         end
     end
   end
@@ -115,6 +136,36 @@ defmodule Mix.Tasks.Traitee.Chat do
     end
 
     {session_id, pid}
+  end
+
+  defp await_streaming_response(ref, mon, session_id) do
+    receive do
+      {:session_progress, ^ref, _info} ->
+        await_streaming_response(ref, mon, session_id)
+
+      {:session_response, ^ref, result} ->
+        result
+
+      {:DOWN, ^mon, :process, _pid, reason} ->
+        {:crashed, reason}
+    after
+      @progress_timeout ->
+        if has_active_tasks?(session_id) do
+          IO.puts(
+            "#{IO.ANSI.faint()}#{IO.ANSI.blue()}  ⏳ Tasks in progress, still waiting...#{IO.ANSI.reset()}"
+          )
+
+          await_streaming_response(ref, mon, session_id)
+        else
+          :timeout
+        end
+    end
+  end
+
+  defp has_active_tasks?(session_id) do
+    TaskTracker.active_tasks(session_id) != []
+  rescue
+    _ -> false
   end
 
   defp maybe_show_delegation_results(pid) do
