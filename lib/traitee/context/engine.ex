@@ -185,8 +185,9 @@ defmodule Traitee.Context.Engine do
       lines =
         Enum.map(tasks, fn t -> "- [#{t.status}] #{t.id}: #{t.content}" end)
 
-      text = "[Active Tasks]\n#{Enum.join(lines, "\n")}"
-      {text, budget}
+      raw = "[Active Tasks]\n#{Enum.join(lines, "\n")}"
+      tokens = Tokenizer.count_tokens(raw)
+      {raw, %{budget | system_prompt_tokens: budget.system_prompt_tokens + tokens}}
     end
   end
 

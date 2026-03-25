@@ -156,6 +156,8 @@ defmodule Traitee.Tools.TaskTracker do
 
   @doc "Returns active (non-completed, non-cancelled) tasks for a session. Used by context engine."
   def active_tasks(session_id) do
+    auto_prune(session_id)
+
     list_tasks(session_id)
     |> Enum.filter(fn t -> t.status in ["pending", "in_progress"] end)
     |> Enum.sort_by(fn t ->
@@ -166,6 +168,21 @@ defmodule Traitee.Tools.TaskTracker do
     end)
   end
 
+  @doc """
+  Returns a compact one-line-per-task summary for injection between tool rounds.
+  Returns nil when there are no active tasks.
+  """
+  def compact_summary(session_id) do
+    tasks = active_tasks(session_id)
+
+    if tasks == [] do
+      nil
+    else
+      lines = Enum.map(tasks, fn t -> "[#{t.status}] #{t.id}: #{t.content}" end)
+      "[Active Tasks] " <> Enum.join(lines, " | ")
+    end
+  end
+
   @doc "Returns all tasks for a session."
   def list_tasks(session_id) do
     if :ets.whereis(@table) != :undefined do
@@ -174,6 +191,25 @@ defmodule Traitee.Tools.TaskTracker do
     else
       []
     end
+  end
+
+  @max_completed_age_ms 10 * 60 * 1_000
+
+  @doc "Removes completed/cancelled tasks older than 10 minutes."
+  def auto_prune(session_id) do
+    now = DateTime.utc_now()
+
+    list_tasks(session_id)
+    |> Enum.filter(fn t -> t.status in ["completed", "cancelled"] end)
+    |> Enum.each(fn t ->
+      age_ms = DateTime.diff(now, t.updated_at, :millisecond)
+
+      if age_ms > @max_completed_age_ms do
+        delete_task(session_id, t.id)
+      end
+    end)
+  rescue
+    _ -> :ok
   end
 
   defp get_task(session_id, id) do

@@ -20,6 +20,7 @@ defmodule Traitee.Session.Server do
   alias Traitee.Memory.STM
   alias Traitee.Security.{Audit, Cognitive, IOGuard, Judge, OutputGuard, Sanitizer, ThreatTracker}
   alias Traitee.Tools.Registry, as: ToolRegistry
+  alias Traitee.Tools.TaskTracker
 
   require Logger
 
@@ -334,11 +335,14 @@ defmodule Traitee.Session.Server do
             tool_reminder =
               if Cognitive.enabled?(), do: [Cognitive.tool_reminder()], else: []
 
+            task_reminder = build_task_reminder(state.session_id)
+
             updated_messages =
               messages ++
                 [%{role: "assistant", content: content, tool_calls: tool_calls}] ++
                 tool_results ++
-                tool_reminder
+                tool_reminder ++
+                task_reminder
 
             run_completion_loop(updated_messages, tools, depth + 1, state, notify)
           end
@@ -354,6 +358,13 @@ defmodule Traitee.Session.Server do
 
   defp notify_progress(nil, _info), do: :ok
   defp notify_progress({pid, ref}, info), do: send(pid, {:session_progress, ref, info})
+
+  defp build_task_reminder(session_id) do
+    case TaskTracker.compact_summary(session_id) do
+      nil -> []
+      summary -> [%{role: "system", content: summary}]
+    end
+  end
 
   defp execute_tools(tool_calls, state) do
     Enum.each(tool_calls, fn call ->
