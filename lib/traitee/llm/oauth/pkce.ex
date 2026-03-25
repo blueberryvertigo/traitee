@@ -74,19 +74,31 @@ defmodule Traitee.LLM.OAuth.PKCE do
   # -- URL Building --
 
   defp build_authorize_url(redirect_uri, state, challenge) do
-    params =
-      URI.encode_query(%{
-        "code" => "true",
-        "client_id" => @client_id,
-        "response_type" => "code",
-        "redirect_uri" => redirect_uri,
-        "scope" => @scopes,
-        "code_challenge" => challenge,
-        "code_challenge_method" => "S256",
-        "state" => state
-      })
+    # Build query string manually to avoid over-encoding colons in scopes.
+    # JavaScript's URLSearchParams encodes minimally; Elixir's URI.encode_query
+    # encodes colons as %3A which claude.ai rejects.
+    params = [
+      {"code", "true"},
+      {"client_id", @client_id},
+      {"response_type", "code"},
+      {"redirect_uri", redirect_uri},
+      {"scope", @scopes},
+      {"code_challenge", challenge},
+      {"code_challenge_method", "S256"},
+      {"state", state}
+    ]
 
-    "#{@authorize_url}?#{params}"
+    query =
+      Enum.map_join(params, "&", fn {k, v} ->
+        "#{k}=#{URI.encode(v, &uri_unreserved?/1)}"
+      end)
+
+    "#{@authorize_url}?#{query}"
+  end
+
+  # Match JavaScript URLSearchParams encoding: don't encode : @ ! $ ' ( ) * , ;
+  defp uri_unreserved?(c) do
+    URI.char_unreserved?(c) or c in ~c[:@!$'()*,;]
   end
 
   # -- Token Exchange --
