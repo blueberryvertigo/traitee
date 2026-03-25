@@ -82,6 +82,78 @@ defmodule Traitee.CLI.Display do
 
   def goodbye, do: "\n#{ANSI.faint()}Goodbye!#{ANSI.reset()}"
 
+  # -- Tool Call Summaries --
+
+  @max_summary_len 40
+
+  @doc "Returns a display label for a tool call: name + short summary of what it does."
+  def tool_summary(name, args) when is_map(args) do
+    case summarize_tool(name, args) do
+      nil -> name
+      summary -> "#{name} — #{summary}"
+    end
+  end
+
+  def tool_summary(name, _args), do: name
+
+  defp summarize_tool("bash", %{"command" => cmd}) when is_binary(cmd),
+    do: trunc_text(String.replace(cmd, "\n", " "))
+
+  defp summarize_tool("file", %{"operation" => op, "path" => path}) when is_binary(path),
+    do: "#{op} #{Path.basename(path)}"
+
+  defp summarize_tool("web_search", %{"query" => q}) when is_binary(q),
+    do: trunc_text(q)
+
+  defp summarize_tool("browser", %{"action" => action, "url" => url}) when is_binary(url),
+    do: "#{action} #{trunc_text(URI.parse(url).host || url)}"
+
+  defp summarize_tool("browser", %{"action" => action}), do: action
+
+  defp summarize_tool("memory", %{"action" => "remember", "entity" => e}) when is_binary(e),
+    do: "remember #{e}"
+
+  defp summarize_tool("memory", %{"action" => "recall", "query" => q}) when is_binary(q),
+    do: "recall #{trunc_text(q)}"
+
+  defp summarize_tool("memory", %{"action" => a}), do: a
+
+  defp summarize_tool("sessions", %{"action" => a, "session_id" => sid}) when is_binary(sid),
+    do: "#{a} #{sid}"
+
+  defp summarize_tool("sessions", %{"action" => a}), do: a
+
+  defp summarize_tool("cron", %{"action" => a, "name" => n}) when is_binary(n), do: "#{a} #{n}"
+  defp summarize_tool("cron", %{"action" => a}), do: a
+
+  defp summarize_tool("channel_send", %{"channel" => ch}) when is_binary(ch), do: ch
+
+  defp summarize_tool("skill_manage", %{"action" => a, "name" => n}) when is_binary(n),
+    do: "#{a} #{n}"
+
+  defp summarize_tool("skill_manage", %{"action" => a}), do: a
+
+  defp summarize_tool("workspace_edit", %{"action" => a, "file" => f}) when is_binary(f),
+    do: "#{a} #{f}"
+
+  defp summarize_tool("delegate_task", %{"tasks" => tasks}) when is_list(tasks) do
+    tags = Enum.map_join(tasks, ", ", &((&1["tag"] || "task") |> to_string()))
+    trunc_text(tags)
+  end
+
+  defp summarize_tool("task_tracker", %{"action" => a, "id" => id}) when is_binary(id),
+    do: "#{a} #{id}"
+
+  defp summarize_tool("task_tracker", %{"action" => a}), do: a
+
+  defp summarize_tool(_name, _args), do: nil
+
+  defp trunc_text(text) do
+    if String.length(text) > @max_summary_len,
+      do: String.slice(text, 0, @max_summary_len) <> "…",
+      else: text
+  end
+
   # -- Help Formatting --
 
   def format_help(text) do
