@@ -362,7 +362,14 @@ defmodule Traitee.Context.Engine do
 
   # -- Message list assembly --
 
-  defp build_message_list(system_prompt, skills_section, tasks_section, sections, current_msg, channel) do
+  defp build_message_list(
+         system_prompt,
+         skills_section,
+         tasks_section,
+         sections,
+         current_msg,
+         channel
+       ) do
     messages = []
 
     sys_content =

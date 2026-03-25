@@ -338,7 +338,7 @@ defmodule Traitee.Session.Server do
 
           tool_results = execute_tools(tool_calls, state)
 
-          if only_delegation?(tool_calls) do
+          if only_delegation?(tool_calls, tool_results) do
             tags = extract_delegation_tags(tool_results)
 
             {:ok,
@@ -512,10 +512,18 @@ defmodule Traitee.Session.Server do
     end
   end
 
-  defp only_delegation?(tool_calls) do
-    Enum.all?(tool_calls, fn call ->
-      get_in(call, ["function", "name"]) == "delegate_task"
-    end)
+  defp only_delegation?(tool_calls, tool_results) do
+    all_delegate? =
+      Enum.all?(tool_calls, fn call ->
+        get_in(call, ["function", "name"]) == "delegate_task"
+      end)
+
+    actually_dispatched? =
+      Enum.any?(tool_results, fn r ->
+        String.contains?(r[:content] || "", "Subagents dispatched")
+      end)
+
+    all_delegate? and actually_dispatched?
   end
 
   defp extract_delegation_tags(tool_results) do
