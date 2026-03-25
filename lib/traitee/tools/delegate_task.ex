@@ -111,6 +111,8 @@ defmodule Traitee.Tools.DelegateTask do
 
       IO.puts("#{ANSI.yellow()}  ▸ Dispatched: #{tag_list}#{ANSI.reset()}")
 
+      Traitee.Session.notify_delegation(session_id, 1)
+
       Task.start(fn ->
         {:ok, results} = Runner.run(parsed_tasks, opts)
         Traitee.Session.inject_async_result(session_id, results)

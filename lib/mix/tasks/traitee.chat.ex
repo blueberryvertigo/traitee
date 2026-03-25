@@ -41,6 +41,8 @@ defmodule Mix.Tasks.Traitee.Chat do
   end
 
   defp loop(session_id, pid, opts) do
+    maybe_show_delegation_results(pid)
+
     case IO.gets(Display.user_prompt()) do
       :eof ->
         IO.puts(Display.goodbye())
@@ -58,10 +60,9 @@ defmodule Mix.Tasks.Traitee.Chat do
             loop(session_id, pid, opts)
 
           true ->
-            IO.write(Display.assistant_prefix())
-
             case SessionServer.send_message(pid, input, :cli) do
               {:ok, response} ->
+                IO.write(Display.assistant_prefix())
                 IO.puts("#{IO.ANSI.white()}#{response}#{IO.ANSI.reset()}")
 
               {:error, reason} ->
@@ -114,6 +115,28 @@ defmodule Mix.Tasks.Traitee.Chat do
     end
 
     {session_id, pid}
+  end
+
+  defp maybe_show_delegation_results(pid) do
+    case SessionServer.pop_delegation_results(pid) do
+      {[], _expected} ->
+        :ok
+
+      {results, expected} ->
+        threshold = max(ceil(expected / 2), 1)
+        total = expected + length(results)
+
+        if length(results) >= threshold do
+          IO.puts(
+            Display.system_msg(
+              "Subagent results received (#{length(results)}/#{total}). " <>
+                "Results are in context — ask me about them."
+            )
+          )
+
+          IO.puts("")
+        end
+    end
   end
 
   defp ensure_migrated do

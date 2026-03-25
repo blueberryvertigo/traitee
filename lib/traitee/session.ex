@@ -52,4 +52,17 @@ defmodule Traitee.Session do
       [] -> :ok
     end
   end
+
+  @doc """
+  Notifies a session that delegation tasks were dispatched.
+  Used to track expected result count for completion thresholds.
+  """
+  def notify_delegation(nil, _count), do: :ok
+
+  def notify_delegation(session_id, count) do
+    case Registry.lookup(Traitee.Session.Registry, session_id) do
+      [{pid, _}] -> send(pid, {:delegation_dispatched, count})
+      [] -> :ok
+    end
+  end
 end
