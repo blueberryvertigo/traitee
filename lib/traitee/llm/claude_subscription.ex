@@ -262,7 +262,20 @@ defmodule Traitee.LLM.ClaudeSubscription do
     )
   end
 
-  defp prepend_required_prefix(nil), do: @required_prefix
-  defp prepend_required_prefix(""), do: @required_prefix
-  defp prepend_required_prefix(system), do: @required_prefix <> "\n\n" <> system
+  # The API validates that the first system block is exactly the Claude Code prefix.
+  # System must be an array of text blocks, not a concatenated string.
+  defp prepend_required_prefix(nil) do
+    [%{type: "text", text: @required_prefix}]
+  end
+
+  defp prepend_required_prefix("") do
+    [%{type: "text", text: @required_prefix}]
+  end
+
+  defp prepend_required_prefix(system) do
+    [
+      %{type: "text", text: @required_prefix},
+      %{type: "text", text: system}
+    ]
+  end
 end
