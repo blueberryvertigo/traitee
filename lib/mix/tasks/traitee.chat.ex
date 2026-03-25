@@ -110,9 +110,65 @@ defmodule Mix.Tasks.Traitee.Chat do
     {new_session_id, new_pid}
   end
 
+  defp handle_command("/threats" <> _, session_id, pid, _opts) do
+    alias Traitee.Security.{Cognitive, SystemAuth, ThreatTracker}
+
+    summary = ThreatTracker.summary(session_id)
+    events = ThreatTracker.events(session_id)
+    has_threats = events != []
+
+    IO.puts(Display.system_msg(summary))
+
+    if has_threats do
+      IO.puts("  #{IO.ANSI.faint()}Recent events:#{IO.ANSI.reset()}")
+
+      events
+      |> Enum.take(-5)
+      |> Enum.each(fn %{threat: t} ->
+        IO.puts(
+          "  #{IO.ANSI.faint()}[#{t.severity}] #{t.pattern_name} — #{t.category}#{IO.ANSI.reset()}"
+        )
+      end)
+    end
+
+    state = SessionServer.get_state(pid)
+    msg_count = state[:message_count] || 0
+
+    reminders =
+      if Cognitive.enabled?() do
+        Cognitive.reminders_for(session_id,
+          message_count: msg_count,
+          has_recent_threats: has_threats
+        )
+      else
+        []
+      end
+
+    tagged_reminders = Enum.map(reminders, &SystemAuth.tag_message(&1, session_id))
+
+    if tagged_reminders != [] do
+      IO.puts("")
+      IO.puts("  #{IO.ANSI.faint()}Injected system messages (#{length(tagged_reminders)}):#{IO.ANSI.reset()}")
+
+      Enum.each(tagged_reminders, fn r ->
+        preview = String.slice(r.content, 0, 150)
+        IO.puts("  #{IO.ANSI.faint()}#{IO.ANSI.yellow()}→ #{preview}...#{IO.ANSI.reset()}")
+      end)
+    else
+      IO.puts("")
+      IO.puts("  #{IO.ANSI.faint()}No security reminders injected at current state.#{IO.ANSI.reset()}")
+    end
+
+    {session_id, pid}
+  end
+
   defp handle_command("/help" <> _, session_id, pid, _opts) do
     help = CommandRegistry.help_text()
-    IO.puts(Display.format_help(help <> "\n/quit — Exit the REPL"))
+
+    IO.puts(
+      Display.format_help(help <> "\n/threats — Show threat level and recent events\n/quit — Exit the REPL")
+    )
+
     {session_id, pid}
   end
 

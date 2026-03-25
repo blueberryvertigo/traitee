@@ -12,6 +12,7 @@ defmodule Traitee.AutoReply.CommandRegistry do
           description: String.t(),
           args_schema: list(),
           requires_owner: boolean(),
+          cli_only: boolean(),
           hidden: boolean()
         }
 
@@ -80,6 +81,7 @@ defmodule Traitee.AutoReply.CommandRegistry do
       handler: :cmd_doctor,
       description: "Run diagnostics",
       requires_owner: true,
+      cli_only: true,
       hidden: false
     },
     "cron" => %{
@@ -92,6 +94,13 @@ defmodule Traitee.AutoReply.CommandRegistry do
       handler: :cmd_pairing,
       description: "Pairing — /pairing [approve|revoke|list]",
       requires_owner: true,
+      hidden: false
+    },
+    "threats" => %{
+      handler: :cmd_threats,
+      description: "Show threat level and security state",
+      requires_owner: true,
+      cli_only: true,
       hidden: false
     }
   }
@@ -125,6 +134,10 @@ defmodule Traitee.AutoReply.CommandRegistry do
   end
 
   # -- Dispatch --
+
+  defp dispatch(%{cli_only: true}, _args, %{inbound: %{channel_type: ch}}) when ch != :cli do
+    {:error, :cli_only}
+  end
 
   defp dispatch(%{requires_owner: true} = cmd, args, %{inbound: inbound} = ctx) do
     if Traitee.Config.sender_is_owner?(inbound.sender_id, inbound.channel_type) do
@@ -355,6 +368,13 @@ defmodule Traitee.AutoReply.CommandRegistry do
 
   def cmd_pairing(_, _ctx),
     do: {:ok, "Usage: /pairing [list|approve <code>|revoke <channel> <id>]"}
+
+  def cmd_threats(_args, %{inbound: inbound}) do
+    alias Traitee.Security.ThreatTracker
+
+    session_id = build_session_id(inbound)
+    {:ok, ThreatTracker.summary(session_id)}
+  end
 
   # -- Helpers --
 

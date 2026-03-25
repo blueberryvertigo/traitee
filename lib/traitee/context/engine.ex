@@ -7,7 +7,7 @@ defmodule Traitee.Context.Engine do
   alias Traitee.Context.{Budget, Continuity}
   alias Traitee.LLM.{Router, Tokenizer}
   alias Traitee.Memory.{HybridSearch, MTM, QueryExpansion, STM, Vector}
-  alias Traitee.Security.{Canary, Cognitive}
+  alias Traitee.Security.{Canary, Cognitive, SystemAuth}
   alias Traitee.Skills.Loader, as: Skills
   alias Traitee.Workspace
 
@@ -65,6 +65,7 @@ defmodule Traitee.Context.Engine do
         current_message,
         channel
       )
+      |> tag_system_messages(session_id)
 
     log_budget_summary(budget)
     {messages, budget}
@@ -85,6 +86,8 @@ defmodule Traitee.Context.Engine do
 
     {skill_msgs, budget} =
       load_triggered_skills(triggered_skills, budget)
+
+    skill_msgs = Enum.map(skill_msgs, &SystemAuth.tag_message(&1, session_id))
 
     insert_idx = find_system_end(messages)
     messages = List.insert_at(messages, insert_idx, skill_msgs) |> List.flatten()
@@ -117,6 +120,14 @@ defmodule Traitee.Context.Engine do
     session_id = opts[:session_id]
 
     canary_enabled = Traitee.Config.get([:security, :cognitive, :canary_enabled]) != false
+
+    base =
+      if session_id do
+        auth_section = SystemAuth.system_prompt_section(session_id)
+        base <> "\n\n" <> auth_section
+      else
+        base
+      end
 
     if session_id && Cognitive.enabled?() && canary_enabled do
       canary_section = Canary.system_prompt_section(session_id)
@@ -456,6 +467,12 @@ defmodule Traitee.Context.Engine do
       end)
 
     idx || length(messages)
+  end
+
+  defp tag_system_messages(messages, nil), do: messages
+
+  defp tag_system_messages(messages, session_id) do
+    Enum.map(messages, &SystemAuth.tag_message(&1, session_id))
   end
 
   defp log_budget_summary(budget) do
