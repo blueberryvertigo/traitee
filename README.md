@@ -115,7 +115,7 @@ Automatic failover between primary and fallback providers. Usage tracking per se
 | `channel_send` | Send messages to any configured channel |
 | `skill_manage` | Create/patch/delete skills (agent's procedural memory) |
 | `workspace_edit` | Read/patch workspace prompts (SOUL.md, AGENTS.md, TOOLS.md) |
-| `delegate_task` | Spawn up to 5 parallel subagents with filtered tool sets |
+| `delegate_task` | Spawn up to 5 parallel subagents with filtered tool sets + real-time progress tracking |
 | `task_tracker` | Structured per-session todo list |
 
 All filesystem/command tools pass through the full security pipeline. Dynamic tools can be registered at runtime.

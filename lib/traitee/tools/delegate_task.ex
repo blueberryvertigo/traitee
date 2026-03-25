@@ -11,7 +11,7 @@ defmodule Traitee.Tools.DelegateTask do
   @behaviour Traitee.Tools.Tool
 
   alias IO.ANSI
-  alias Traitee.Delegation.Runner
+  alias Traitee.Delegation.{Progress, Runner}
 
   @impl true
   def name, do: "delegate_task"
@@ -19,10 +19,11 @@ defmodule Traitee.Tools.DelegateTask do
   @impl true
   def description do
     """
-    Spawn subagents to work on tasks in parallel. Each subagent gets its \
-    own isolated context and tool access. Only the final results are returned \
-    as XML. Use this when you have independent subtasks that can run concurrently. \
-    You must specify which tools each subagent can use.\
+    Spawn subagents to work on tasks in parallel, or check their progress. \
+    Use action "run" (default) with a tasks list to dispatch subagents. \
+    Use action "status" to check progress of running subagents. \
+    Each subagent gets its own isolated context and tool access. \
+    Only the final results are returned as XML.\
     """
   end
 
@@ -31,9 +32,15 @@ defmodule Traitee.Tools.DelegateTask do
     %{
       "type" => "object",
       "properties" => %{
+        "action" => %{
+          "type" => "string",
+          "enum" => ["run", "status"],
+          "description" =>
+            "Action: 'run' to dispatch subagents (default), 'status' to check progress of running subagents"
+        },
         "tasks" => %{
           "type" => "array",
-          "description" => "List of tasks to delegate (max 5)",
+          "description" => "List of tasks to delegate (max 5, required for 'run' action)",
           "items" => %{
             "type" => "object",
             "properties" => %{
@@ -77,11 +84,16 @@ defmodule Traitee.Tools.DelegateTask do
           "description" => "Optional override system prompt for all subagents"
         }
       },
-      "required" => ["tasks"]
+      "required" => []
     }
   end
 
   @impl true
+  def execute(%{"action" => "status"} = args) do
+    session_id = args["_session_id"]
+    {:ok, Progress.format_status(session_id)}
+  end
+
   def execute(%{"tasks" => tasks} = args) when is_list(tasks) and tasks != [] do
     default_max = args["max_tool_calls"]
 
@@ -129,7 +141,8 @@ defmodule Traitee.Tools.DelegateTask do
     {:error, "Tasks list cannot be empty"}
   end
 
-  def execute(_), do: {:error, "Missing required parameter: tasks (array of task objects)"}
+  def execute(_),
+    do: {:error, "Use action 'run' with tasks list, or action 'status' to check progress"}
 
   defp maybe_put(opts, _key, nil), do: opts
   defp maybe_put(opts, key, value), do: Keyword.put(opts, key, value)

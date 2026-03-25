@@ -148,7 +148,10 @@ defmodule Mix.Tasks.Traitee.Chat do
 
     if tagged_reminders != [] do
       IO.puts("")
-      IO.puts("  #{IO.ANSI.faint()}Injected system messages (#{length(tagged_reminders)}):#{IO.ANSI.reset()}")
+
+      IO.puts(
+        "  #{IO.ANSI.faint()}Injected system messages (#{length(tagged_reminders)}):#{IO.ANSI.reset()}"
+      )
 
       Enum.each(tagged_reminders, fn r ->
         preview = String.slice(r.content, 0, 150)
@@ -156,7 +159,10 @@ defmodule Mix.Tasks.Traitee.Chat do
       end)
     else
       IO.puts("")
-      IO.puts("  #{IO.ANSI.faint()}No security reminders injected at current state.#{IO.ANSI.reset()}")
+
+      IO.puts(
+        "  #{IO.ANSI.faint()}No security reminders injected at current state.#{IO.ANSI.reset()}"
+      )
     end
 
     {session_id, pid}
@@ -166,7 +172,9 @@ defmodule Mix.Tasks.Traitee.Chat do
     help = CommandRegistry.help_text()
 
     IO.puts(
-      Display.format_help(help <> "\n/threats — Show threat level and recent events\n/quit — Exit the REPL")
+      Display.format_help(
+        help <> "\n/threats — Show threat level and recent events\n/quit — Exit the REPL"
+      )
     )
 
     {session_id, pid}

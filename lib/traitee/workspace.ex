@@ -236,6 +236,7 @@ defmodule Traitee.Workspace do
     - Give each subagent a unique, descriptive `tag` so results are easy to identify in the XML response.
     - Parse the `<delegate_results>` XML to synthesize a unified answer for the user.
     - Do not delegate trivial tasks that would be faster to do directly.
+    - For long-running delegations, use `delegate_task` with `action: "status"` to check subagent progress (round, tool count, what they're doing). Report progress to the user if they ask or if the wait is long.
     """
   end
 
@@ -347,11 +348,21 @@ defmodule Traitee.Workspace do
 
     ### Parameters
 
-    - `tasks` — Array of task objects, each with:
+    - `action` — `"run"` (default) to dispatch subagents, `"status"` to check progress of running subagents
+    - `tasks` — Array of task objects (required for `"run"`), each with:
       - `tag` — Unique identifier (e.g. "research", "code-review", "testing")
       - `description` — The full task description for the subagent
       - `tools` — Array of tool names the subagent can use (e.g. `["bash", "file"]`)
     - `timeout` — Optional per-subagent timeout in ms (default: 300000, max: 600000)
+
+    ### Checking Progress
+
+    While subagents are working, call `delegate_task` with `action: "status"` to see real-time progress:
+    ```
+    [research] thinking, round 3/10, 2 tool calls, last: web_search (12s)
+    [code-review] executing, 5 tool calls, last: file (8s)
+    ```
+    Use this when the user asks about progress, or proactively if subagents are taking a long time.
 
     ### Results Format
 
@@ -371,7 +382,7 @@ defmodule Traitee.Workspace do
 
     - Max 5 subagents per delegation call.
     - Subagents cannot delegate further (no recursive delegation).
-    - Each subagent has a max of 3 tool iterations.
+    - Each subagent has a max of 25 tool iterations (default 10).
     - Only grant tools that the subtask actually needs.
     - Use delegation for independent tasks: research + implementation, multi-file analysis, parallel searches.
     """

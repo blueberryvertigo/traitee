@@ -13,6 +13,7 @@ defmodule Traitee.Delegation.Runner do
 
   alias IO.ANSI
   alias Traitee.ActivityLog
+  alias Traitee.Delegation.Progress
   alias Traitee.LLM.Router, as: LLMRouter
   alias Traitee.Security.IOGuard
   alias Traitee.Tools.Registry, as: ToolRegistry
@@ -100,6 +101,7 @@ defmodule Traitee.Delegation.Runner do
       end)
 
     results = Task.yield_many(async_tasks, timeout)
+    Progress.clear_session(session_id)
 
     formatted =
       Enum.zip(async_tasks, results)
@@ -143,8 +145,15 @@ defmodule Traitee.Delegation.Runner do
   end
 
   defp run_subagent(description, tool_names, system_prompt, ctx) do
-    %{tag: tag, max_calls: max_calls, quiet: quiet} = ctx
+    %{tag: tag, max_calls: max_calls, quiet: quiet, session_id: session_id} = ctx
     status_log("▶ [#{tag}] Starting (#{max_calls} tool rounds)", quiet)
+
+    Progress.update(session_id, tag, %{
+      status: "starting",
+      round: 0,
+      max_rounds: max_calls,
+      tool_count: 0
+    })
 
     tools = filter_tools(tool_names)
 
@@ -168,6 +177,7 @@ defmodule Traitee.Delegation.Runner do
 
     if depth > max_calls do
       status_log("⚠ [#{tag}] Max depth — #{tool_count} tool calls", quiet)
+      Progress.clear(session_id, tag)
 
       content =
         Enum.find_value(Enum.reverse(messages), "Task completed (max tool depth reached).", fn
@@ -179,6 +189,12 @@ defmodule Traitee.Delegation.Runner do
     else
       remaining = max_calls - depth
       status_log("⟳ [#{tag}] Thinking (round #{depth + 1}/#{max_calls})", quiet)
+
+      Progress.update(session_id, tag, %{
+        status: "thinking",
+        round: depth + 1,
+        tool_count: tool_count
+      })
 
       request = %{messages: messages}
 
@@ -193,7 +209,9 @@ defmodule Traitee.Delegation.Runner do
         {:ok, %{tool_calls: tool_calls, content: content}}
         when is_list(tool_calls) and tool_calls != [] ->
           new_count = tool_count + length(tool_calls)
-          tool_results = execute_subagent_tools(tool_calls, tag, session_id, tool_count, quiet)
+
+          tool_results =
+            execute_subagent_tools(tool_calls, tag, session_id, tool_count, quiet)
 
           updated =
             messages ++
@@ -218,10 +236,12 @@ defmodule Traitee.Delegation.Runner do
 
         {:ok, %{content: content}} ->
           status_log("✓ [#{tag}] Done — #{tool_count} tool calls", quiet)
+          Progress.clear(session_id, tag)
           {:ok, content, tool_count}
 
         {:error, reason} ->
           status_err("[#{tag}] Error: #{inspect(reason)}", quiet)
+          Progress.clear(session_id, tag)
           {:error, reason}
       end
     end
@@ -236,6 +256,12 @@ defmodule Traitee.Delegation.Runner do
       args = parse_args(func["arguments"])
 
       status_log("⚙ [#{tag}] Tool #{idx}: #{ANSI.yellow()}#{tool_name}#{ANSI.reset()}", quiet)
+
+      Progress.update(session_id, tag, %{
+        status: "executing",
+        tool_count: idx,
+        last_tool: tool_name
+      })
 
       args_with_context =
         Map.put(args, "_session_id", "subagent:#{tag}:#{session_id || "unknown"}")

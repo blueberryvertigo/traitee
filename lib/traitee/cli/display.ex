@@ -136,6 +136,8 @@ defmodule Traitee.CLI.Display do
   defp summarize_tool("workspace_edit", %{"action" => a, "file" => f}) when is_binary(f),
     do: "#{a} #{f}"
 
+  defp summarize_tool("delegate_task", %{"action" => "status"}), do: "status"
+
   defp summarize_tool("delegate_task", %{"tasks" => tasks}) when is_list(tasks) do
     tags = Enum.map_join(tasks, ", ", &((&1["tag"] || "task") |> to_string()))
     trunc_text(tags)
