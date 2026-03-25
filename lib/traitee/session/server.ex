@@ -14,11 +14,23 @@ defmodule Traitee.Session.Server do
 
   alias IO.ANSI
   alias Traitee.ActivityLog
+  alias Traitee.CLI.Display
   alias Traitee.Context.{Continuity, Engine}
   alias Traitee.LLM.Router, as: LLMRouter
   alias Traitee.Memory.Compactor
   alias Traitee.Memory.STM
-  alias Traitee.Security.{Audit, Cognitive, IOGuard, Judge, OutputGuard, Sanitizer, SystemAuth, ThreatTracker}
+
+  alias Traitee.Security.{
+    Audit,
+    Cognitive,
+    IOGuard,
+    Judge,
+    OutputGuard,
+    Sanitizer,
+    SystemAuth,
+    ThreatTracker
+  }
+
   alias Traitee.Tools.Registry, as: ToolRegistry
   alias Traitee.Tools.TaskTracker
 
@@ -371,16 +383,13 @@ defmodule Traitee.Session.Server do
   end
 
   defp execute_tools(tool_calls, state) do
-    Enum.each(tool_calls, fn call ->
-      name = get_in(call, ["function", "name"])
-
-      IO.puts("#{ANSI.faint()}#{ANSI.blue()}  ⚙ #{name}#{ANSI.reset()}")
-    end)
-
     Enum.map(tool_calls, fn call ->
       func = call["function"] || %{}
       name = func["name"]
       args = parse_args(func["arguments"])
+
+      label = Display.tool_summary(name, args)
+      IO.puts("#{ANSI.faint()}#{ANSI.blue()}  ⚙ #{label}#{ANSI.reset()}")
 
       args_with_context =
         args
