@@ -60,7 +60,7 @@ defmodule Mix.Tasks.Traitee.Chat do
 
             case SessionServer.send_message(pid, input, :cli) do
               {:ok, response} ->
-                IO.puts(response)
+                IO.puts("#{IO.ANSI.white()}#{response}#{IO.ANSI.reset()}")
 
               {:error, reason} ->
                 IO.puts(Display.error_msg(inspect(reason)))

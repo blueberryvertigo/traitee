@@ -12,6 +12,7 @@ defmodule Traitee.Session.Server do
   """
   use GenServer, restart: :transient
 
+  alias IO.ANSI
   alias Traitee.Context.{Continuity, Engine}
   alias Traitee.LLM.Router, as: LLMRouter
   alias Traitee.Memory.Compactor
@@ -235,7 +236,7 @@ defmodule Traitee.Session.Server do
        "I got carried away with tools there. Could you rephrase your question? I'll try to answer directly."}
     else
       if depth > 0 do
-        Logger.info("[#{state.session_id}] Tool round #{depth}/50")
+        IO.puts("#{ANSI.faint()}#{ANSI.blue()}  ⟳ Tool round #{depth}/50#{ANSI.reset()}")
       end
 
       request = %{messages: messages}
@@ -275,7 +276,8 @@ defmodule Traitee.Session.Server do
   defp execute_tools(tool_calls, state) do
     Enum.each(tool_calls, fn call ->
       name = get_in(call, ["function", "name"])
-      Logger.info("[#{state.session_id}] Tool: #{name}")
+
+      IO.puts("#{ANSI.faint()}#{ANSI.blue()}  ⚙ #{name}#{ANSI.reset()}")
     end)
 
     Enum.map(tool_calls, fn call ->

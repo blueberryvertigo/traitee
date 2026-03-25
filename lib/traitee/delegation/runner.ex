@@ -11,6 +11,7 @@ defmodule Traitee.Delegation.Runner do
   IOGuard is still applied to tool execution for defense-in-depth.
   """
 
+  alias IO.ANSI
   alias Traitee.LLM.Router, as: LLMRouter
   alias Traitee.Security.IOGuard
   alias Traitee.Tools.Registry, as: ToolRegistry
@@ -117,7 +118,7 @@ defmodule Traitee.Delegation.Runner do
   end
 
   defp run_subagent(tag, description, tool_names, system_prompt, parent_session_id) do
-    Logger.info("[subagent:#{tag}] Starting")
+    status_log("▶ [#{tag}] Starting")
 
     tools = filter_tools(tool_names)
 
@@ -131,7 +132,7 @@ defmodule Traitee.Delegation.Runner do
 
   defp subagent_loop(messages, tools, depth, tool_count, tag, session_id) do
     if depth > @max_tool_depth do
-      Logger.info("[subagent:#{tag}] Max depth reached (#{tool_count} tool calls)")
+      status_log("⚠ [#{tag}] Max depth — #{tool_count} tool calls")
 
       content =
         Enum.find_value(Enum.reverse(messages), "Task completed (max tool depth reached).", fn
@@ -141,7 +142,7 @@ defmodule Traitee.Delegation.Runner do
 
       {:ok, content, tool_count}
     else
-      Logger.info("[subagent:#{tag}] Thinking... (round #{depth + 1}/#{@max_tool_depth})")
+      status_log("⟳ [#{tag}] Thinking (round #{depth + 1}/#{@max_tool_depth})")
 
       request = %{messages: messages}
 
@@ -166,11 +167,11 @@ defmodule Traitee.Delegation.Runner do
           subagent_loop(updated, tools, depth + 1, new_count, tag, session_id)
 
         {:ok, %{content: content}} ->
-          Logger.info("[subagent:#{tag}] Done (#{tool_count} tool calls)")
+          status_log("✓ [#{tag}] Done — #{tool_count} tool calls")
           {:ok, content, tool_count}
 
         {:error, reason} ->
-          Logger.info("[subagent:#{tag}] Error: #{inspect(reason)}")
+          status_err("[#{tag}] Error: #{inspect(reason)}")
           {:error, reason}
       end
     end
@@ -184,7 +185,7 @@ defmodule Traitee.Delegation.Runner do
       tool_name = func["name"]
       args = parse_args(func["arguments"])
 
-      Logger.info("[subagent:#{tag}] Tool #{idx}/#{@max_tool_depth * 2}: #{tool_name}")
+      status_log("⚙ [#{tag}] Tool #{idx}: #{ANSI.yellow()}#{tool_name}#{ANSI.reset()}")
 
       args_with_context =
         Map.put(args, "_session_id", "subagent:#{tag}:#{session_id || "unknown"}")
@@ -250,6 +251,9 @@ defmodule Traitee.Delegation.Runner do
     idx = Enum.find_index(async_tasks, &(&1 == async_task))
     if idx, do: Enum.at(tasks, idx).tag, else: "unknown"
   end
+
+  defp status_log(msg), do: IO.puts("#{ANSI.faint()}#{ANSI.cyan()}  #{msg}#{ANSI.reset()}")
+  defp status_err(msg), do: IO.puts("#{ANSI.faint()}#{ANSI.red()}  #{msg}#{ANSI.reset()}")
 
   defp parse_args(args) when is_binary(args) do
     case Jason.decode(args) do
