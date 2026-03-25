@@ -219,14 +219,14 @@ defmodule Traitee.LLM.OAuth.TokenManager do
   # -- Private: Exchange --
 
   defp do_exchange(setup_token) do
-    body = %{
+    body = [
       grant_type: "authorization_code",
       code: setup_token,
       client_id: @client_id,
       redirect_uri: @redirect_uri
-    }
+    ]
 
-    case Req.post(@token_url, json: body, receive_timeout: 15_000, retry: false) do
+    case Req.post(@token_url, form: body, receive_timeout: 15_000, retry: false) do
       {:ok, %{status: 200, body: resp}} ->
         {:ok, resp}
 
@@ -243,13 +243,13 @@ defmodule Traitee.LLM.OAuth.TokenManager do
   defp do_refresh(%{refresh_token: nil}), do: {:error, :no_refresh_token}
 
   defp do_refresh(%{refresh_token: refresh_token} = state) do
-    body = %{
+    body = [
       grant_type: "refresh_token",
       refresh_token: refresh_token,
       client_id: @client_id
-    }
+    ]
 
-    case Req.post(@token_url, json: body, receive_timeout: 15_000, retry: false) do
+    case Req.post(@token_url, form: body, receive_timeout: 15_000, retry: false) do
       {:ok, %{status: 200, body: resp}} ->
         new_state = persist_and_update(resp, state)
         {:ok, new_state}
