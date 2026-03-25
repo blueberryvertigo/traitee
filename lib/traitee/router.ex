@@ -160,6 +160,9 @@ defmodule Traitee.Router do
       {:error, :unauthorized} ->
         deliver_response(inbound, "You don't have permission for that command.")
 
+      {:error, :cli_only} ->
+        deliver_response(inbound, "That command is only available on CLI.")
+
       {:error, reason} ->
         deliver_response(inbound, "Error: #{inspect(reason)}")
     end

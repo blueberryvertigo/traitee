@@ -14,6 +14,7 @@ defmodule Traitee.Application do
     Traitee.Memory.Vector.init()
     Traitee.Tools.TaskTracker.init()
     Traitee.ActivityLog.init()
+    Traitee.Security.SystemAuth.init()
 
     children = [
       Traitee.Repo,

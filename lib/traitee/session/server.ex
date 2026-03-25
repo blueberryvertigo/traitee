@@ -18,7 +18,7 @@ defmodule Traitee.Session.Server do
   alias Traitee.LLM.Router, as: LLMRouter
   alias Traitee.Memory.Compactor
   alias Traitee.Memory.STM
-  alias Traitee.Security.{Audit, Cognitive, IOGuard, Judge, OutputGuard, Sanitizer, ThreatTracker}
+  alias Traitee.Security.{Audit, Cognitive, IOGuard, Judge, OutputGuard, Sanitizer, SystemAuth, ThreatTracker}
   alias Traitee.Tools.Registry, as: ToolRegistry
   alias Traitee.Tools.TaskTracker
 
@@ -338,12 +338,15 @@ defmodule Traitee.Session.Server do
 
             task_reminder = build_task_reminder(state.session_id)
 
+            sys_injections =
+              (tool_reminder ++ task_reminder)
+              |> Enum.map(&SystemAuth.tag_message(&1, state.session_id))
+
             updated_messages =
               messages ++
                 [%{role: "assistant", content: content, tool_calls: tool_calls}] ++
                 tool_results ++
-                tool_reminder ++
-                task_reminder
+                sys_injections
 
             run_completion_loop(updated_messages, tools, depth + 1, state, notify)
           end
