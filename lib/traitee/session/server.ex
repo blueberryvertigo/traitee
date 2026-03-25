@@ -28,7 +28,9 @@ defmodule Traitee.Session.Server do
     :stm_state,
     :created_at,
     :message_count,
-    channels: %{}
+    channels: %{},
+    delegations_expected: 0,
+    delegation_results: []
   ]
 
   def start_link(opts) do
@@ -69,6 +71,14 @@ defmodule Traitee.Session.Server do
   """
   def reset(pid) do
     GenServer.call(pid, :reset)
+  end
+
+  @doc """
+  Returns `{results, expected}` — accumulated delegation results and total expected count.
+  Clears the results list. When all results are consumed, resets the expected counter.
+  """
+  def pop_delegation_results(pid) do
+    GenServer.call(pid, :pop_delegation_results)
   end
 
   # -- Server --
@@ -141,6 +151,9 @@ defmodule Traitee.Session.Server do
         stm_state = STM.push(state.stm_state, "assistant", response_text, channel: channel)
         state = %{state | stm_state: stm_state, message_count: state.message_count + 1}
 
+        stm_state = maybe_push_delegation_anchor(stm_state, response_text)
+        state = %{state | stm_state: stm_state}
+
         Continuity.persist_session(state.session_id, %{
           message_count: state.message_count
         })
@@ -185,6 +198,25 @@ defmodule Traitee.Session.Server do
   end
 
   @impl true
+  def handle_call(:pop_delegation_results, _from, state) do
+    result = {state.delegation_results, state.delegations_expected}
+
+    new_expected =
+      if state.delegation_results != [] do
+        max(state.delegations_expected - length(state.delegation_results), 0)
+      else
+        state.delegations_expected
+      end
+
+    {:reply, result, %{state | delegation_results: [], delegations_expected: new_expected}}
+  end
+
+  @impl true
+  def handle_info({:delegation_dispatched, count}, state) do
+    {:noreply, %{state | delegations_expected: state.delegations_expected + count}}
+  end
+
+  @impl true
   def handle_info({:async_tool_result, result}, state) do
     Logger.debug(
       "[#{state.session_id}] Async subagent results received (#{byte_size(result)} bytes)"
@@ -193,7 +225,8 @@ defmodule Traitee.Session.Server do
     stm_state =
       STM.push(state.stm_state, "system", "[Subagent results]\n#{result}", channel: :internal)
 
-    {:noreply, %{state | stm_state: stm_state}}
+    results = state.delegation_results ++ [result]
+    {:noreply, %{state | stm_state: stm_state, delegation_results: results}}
   end
 
   @impl true
@@ -235,8 +268,8 @@ defmodule Traitee.Session.Server do
       {:ok,
        "I got carried away with tools there. Could you rephrase your question? I'll try to answer directly."}
     else
-      if depth > 0 do
-        IO.puts("#{ANSI.faint()}#{ANSI.blue()}  ⟳ Tool round #{depth}/50#{ANSI.reset()}")
+      if depth > 1 do
+        IO.puts("#{ANSI.faint()}#{ANSI.blue()}  ⟳ Round #{depth}/50#{ANSI.reset()}")
       end
 
       request = %{messages: messages}
@@ -386,6 +419,21 @@ defmodule Traitee.Session.Server do
       %{state | channels: channels}
     else
       state
+    end
+  end
+
+  defp maybe_push_delegation_anchor(stm_state, response_text) do
+    if String.contains?(response_text, "dispatched subagents") do
+      STM.push(
+        stm_state,
+        "system",
+        "[Delegation active] Subagents are working in the background. " <>
+          "Do NOT re-dispatch the same tasks. Converse normally with the user " <>
+          "until results arrive in a system message.",
+        channel: :internal
+      )
+    else
+      stm_state
     end
   end
 
