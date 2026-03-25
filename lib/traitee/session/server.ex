@@ -240,20 +240,20 @@ defmodule Traitee.Session.Server do
       )
     end
 
-    stm_state = STM.push(state.stm_state, "user", sanitized_text, channel: channel)
-    state = %{state | stm_state: stm_state, message_count: state.message_count + 1}
-
     tools = ToolRegistry.tool_schemas()
 
     {messages, _budget} =
       Engine.assemble(
         state.session_id,
-        stm_state,
+        state.stm_state,
         sanitized_text,
         tools: if(tools != [], do: tools, else: nil),
         message_count: state.message_count,
         has_recent_threats: has_recent_threats
       )
+
+    stm_state = STM.push(state.stm_state, "user", sanitized_text, channel: channel)
+    state = %{state | stm_state: stm_state, message_count: state.message_count + 1}
 
     case run_completion_loop(messages, tools, state, notify) do
       {:ok, response_text} ->
