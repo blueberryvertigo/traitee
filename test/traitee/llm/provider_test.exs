@@ -32,6 +32,14 @@ defmodule Traitee.LLM.ProviderTest do
       assert {:ok, {Traitee.LLM.XAI, "grok-4-1-fast"}} = Provider.parse_model("xai/grok-4-1-fast")
     end
 
+    test "parses subscription models" do
+      assert {:ok, {Traitee.LLM.ClaudeSubscription, "claude-sonnet-4"}} =
+               Provider.parse_model("sub/claude-sonnet-4")
+
+      assert {:ok, {Traitee.LLM.ClaudeSubscription, "claude-opus-4.6"}} =
+               Provider.parse_model("sub/claude-opus-4.6")
+    end
+
     test "returns error for unknown provider" do
       assert {:error, {:unknown_provider, "google/gemini-pro"}} =
                Provider.parse_model("google/gemini-pro")

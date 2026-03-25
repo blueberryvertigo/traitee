@@ -9,19 +9,22 @@ defmodule Traitee.Onboard.Wizard do
   @providers %{
     "1" => {:openai, "OpenAI", "OPENAI_API_KEY"},
     "2" => {:anthropic, "Anthropic", "ANTHROPIC_API_KEY"},
-    "3" => {:ollama, "Ollama (local)", nil}
+    "3" => {:ollama, "Ollama (local)", nil},
+    "4" => {:claude_subscription, "Claude Subscription (Pro/Max)", :oauth_login}
   }
 
   @default_models %{
     openai: "openai/gpt-5.4",
     anthropic: "anthropic/claude-opus-4.6",
-    ollama: "ollama/llama3"
+    ollama: "ollama/llama3",
+    claude_subscription: "sub/claude-sonnet-4"
   }
 
   @fallback_models %{
     openai: "anthropic/claude-opus-4.6",
     anthropic: "openai/gpt-5.4",
-    ollama: nil
+    ollama: nil,
+    claude_subscription: nil
   }
 
   @channels %{
@@ -96,6 +99,7 @@ defmodule Traitee.Onboard.Wizard do
           :openai_api_key,
           :anthropic_api_key,
           :xai_api_key,
+          :claude_subscription_access_token,
           :discord_bot_token,
           :telegram_bot_token,
           :whatsapp_token
@@ -172,11 +176,26 @@ defmodule Traitee.Onboard.Wizard do
     {provider_id, provider_name, env_var} =
       Map.get(@providers, choice, Map.fetch!(@providers, "1"))
 
-    if env_var do
-      api_key = prompt_secret("Enter your #{provider_name} API key")
-      CredentialStore.store(provider_id, "api_key", api_key)
-      app_key = String.to_atom("#{provider_id}_api_key")
-      Application.put_env(:traitee, app_key, api_key)
+    cond do
+      env_var == :oauth_login ->
+        puts("\n  Opening browser to sign in with your Claude account...")
+
+        case Traitee.LLM.OAuth.TokenManager.login() do
+          :ok ->
+            puts("  #{ANSI.green()}Authenticated!#{ANSI.reset()}")
+
+          {:error, reason} ->
+            puts("  #{ANSI.red()}Login failed: #{inspect(reason)}#{ANSI.reset()}")
+        end
+
+      env_var ->
+        api_key = prompt_secret("Enter your #{provider_name} API key")
+        CredentialStore.store(provider_id, "api_key", api_key)
+        app_key = String.to_atom("#{provider_id}_api_key")
+        Application.put_env(:traitee, app_key, api_key)
+
+      true ->
+        :ok
     end
 
     state = configure_model(state, provider_id)

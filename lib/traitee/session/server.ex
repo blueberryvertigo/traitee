@@ -18,7 +18,18 @@ defmodule Traitee.Session.Server do
   alias Traitee.LLM.Router, as: LLMRouter
   alias Traitee.Memory.Compactor
   alias Traitee.Memory.STM
-  alias Traitee.Security.{Audit, Cognitive, IOGuard, Judge, OutputGuard, Sanitizer, SystemAuth, ThreatTracker}
+
+  alias Traitee.Security.{
+    Audit,
+    Cognitive,
+    IOGuard,
+    Judge,
+    OutputGuard,
+    Sanitizer,
+    SystemAuth,
+    ThreatTracker
+  }
+
   alias Traitee.Tools.Registry, as: ToolRegistry
   alias Traitee.Tools.TaskTracker
 

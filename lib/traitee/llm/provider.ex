@@ -28,6 +28,7 @@ defmodule Traitee.LLM.Provider do
       ["anthropic", model] -> {:ok, {Traitee.LLM.Anthropic, model}}
       ["ollama", model] -> {:ok, {Traitee.LLM.Ollama, model}}
       ["xai", model] -> {:ok, {Traitee.LLM.XAI, model}}
+      ["sub", model] -> {:ok, {Traitee.LLM.ClaudeSubscription, model}}
       _ -> {:error, {:unknown_provider, model_string}}
     end
   end

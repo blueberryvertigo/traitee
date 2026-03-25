@@ -22,6 +22,7 @@ defmodule Traitee.Application do
       Traitee.Hooks.Engine,
       Traitee.Config.HotReload,
       Traitee.LLM.Router,
+      Traitee.LLM.OAuth.TokenManager,
       Traitee.Memory.Compactor,
       Traitee.Memory.BatchEmbedder,
       Traitee.Skills.Registry,

@@ -6,6 +6,7 @@ defmodule Traitee.Secrets.Manager do
   @credential_matrix %{
     openai: [:api_key],
     anthropic: [:api_key],
+    claude_subscription: [:access_token, :refresh_token],
     ollama: [],
     discord: [:bot_token],
     telegram: [:bot_token],

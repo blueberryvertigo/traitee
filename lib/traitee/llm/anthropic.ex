@@ -1,10 +1,12 @@
 defmodule Traitee.LLM.Anthropic do
   @moduledoc """
   Anthropic provider -- Claude Opus, Sonnet, Haiku via the Messages API.
+  Authenticates with an API key (`x-api-key` header).
   """
 
   @behaviour Traitee.LLM.Provider
 
+  alias Traitee.LLM.AnthropicShared
   alias Traitee.LLM.Types.{CompletionRequest, CompletionResponse, ModelInfo}
 
   @api_base "https://api.anthropic.com/v1"
@@ -62,15 +64,15 @@ defmodule Traitee.LLM.Anthropic do
 
   @impl true
   def complete(%CompletionRequest{} = request) do
-    {system, messages} = extract_system(request.messages)
-    merged_system = merge_system(system, request.system)
-    model_id = resolve_model_id(request.model)
-    thinking? = thinking_model?(request.model)
+    {system, messages} = AnthropicShared.extract_system(request.messages)
+    merged_system = AnthropicShared.merge_system(system, request.system)
+    model_id = AnthropicShared.resolve_model_id(request.model, @models)
+    thinking? = AnthropicShared.thinking_model?(request.model, @thinking_models)
 
     formatted_messages =
       messages
-      |> Enum.map(&format_message/1)
-      |> merge_consecutive_roles()
+      |> Enum.map(&AnthropicShared.format_message/1)
+      |> AnthropicShared.merge_consecutive_roles()
 
     body =
       %{
@@ -78,14 +80,17 @@ defmodule Traitee.LLM.Anthropic do
         messages: formatted_messages,
         max_tokens: request.max_tokens || if(thinking?, do: 8192, else: 4096)
       }
-      |> maybe_put(:system, merged_system)
-      |> maybe_put_thinking(thinking?)
-      |> maybe_put(if(thinking?, do: :__skip__, else: :temperature), request.temperature)
-      |> maybe_put_tools(request.tools)
+      |> AnthropicShared.maybe_put(:system, merged_system)
+      |> AnthropicShared.maybe_put_thinking(thinking?)
+      |> AnthropicShared.maybe_put(
+        if(thinking?, do: :__skip__, else: :temperature),
+        request.temperature
+      )
+      |> AnthropicShared.maybe_put_tools(request.tools)
 
     case post("/messages", body) do
       {:ok, %{status: 200, body: resp}} ->
-        {:ok, parse_response(resp)}
+        {:ok, AnthropicShared.parse_response(resp)}
 
       {:ok, %{status: status, body: body}} ->
         {:error, {:api_error, status, body}}
@@ -97,21 +102,24 @@ defmodule Traitee.LLM.Anthropic do
 
   @impl true
   def stream(%CompletionRequest{} = request, callback) when is_function(callback, 1) do
-    {system, messages} = extract_system(request.messages)
-    merged_system = merge_system(system, request.system)
-    model_id = resolve_model_id(request.model)
-    thinking? = thinking_model?(request.model)
+    {system, messages} = AnthropicShared.extract_system(request.messages)
+    merged_system = AnthropicShared.merge_system(system, request.system)
+    model_id = AnthropicShared.resolve_model_id(request.model, @models)
+    thinking? = AnthropicShared.thinking_model?(request.model, @thinking_models)
 
     body =
       %{
         model: model_id,
-        messages: Enum.map(messages, &format_message/1),
+        messages: Enum.map(messages, &AnthropicShared.format_message/1),
         max_tokens: request.max_tokens || if(thinking?, do: 8192, else: 4096),
         stream: true
       }
-      |> maybe_put(:system, merged_system)
-      |> maybe_put_thinking(thinking?)
-      |> maybe_put(if(thinking?, do: :__skip__, else: :temperature), request.temperature)
+      |> AnthropicShared.maybe_put(:system, merged_system)
+      |> AnthropicShared.maybe_put_thinking(thinking?)
+      |> AnthropicShared.maybe_put(
+        if(thinking?, do: :__skip__, else: :temperature),
+        request.temperature
+      )
 
     req =
       build_req()
@@ -172,129 +180,7 @@ defmodule Traitee.LLM.Anthropic do
     })
   end
 
-  # -- Private --
-
-  defp merge_system(nil, nil), do: nil
-  defp merge_system(a, nil), do: a
-  defp merge_system(nil, b), do: b
-  defp merge_system(a, b), do: a <> "\n\n" <> b
-
-  defp extract_system(messages) do
-    {system_msgs, other_msgs} =
-      Enum.split_with(messages, &(&1[:role] == "system" or &1.role == "system"))
-
-    system_text =
-      case Enum.map(system_msgs, &(&1[:content] || &1.content)) |> Enum.reject(&is_nil/1) do
-        [] -> nil
-        parts -> Enum.join(parts, "\n\n")
-      end
-
-    {system_text, other_msgs}
-  end
-
-  defp resolve_model_id(model_id) do
-    case Map.get(@models, model_id) do
-      %{id: full_id} -> full_id
-      nil -> model_id
-    end
-  end
-
-  defp format_message(%Traitee.LLM.Types.Message{} = msg) do
-    %{role: msg.role, content: msg.content}
-  end
-
-  defp format_message(msg) when is_map(msg) do
-    role = msg[:role] || msg["role"]
-    content = msg[:content] || msg["content"]
-    tool_calls = msg[:tool_calls] || msg["tool_calls"]
-
-    cond do
-      role == "tool" ->
-        format_tool_result(msg, content)
-
-      role == "assistant" && is_list(tool_calls) && tool_calls != [] ->
-        format_assistant_with_tools(content, tool_calls)
-
-      true ->
-        %{role: role, content: content}
-    end
-  end
-
-  defp format_tool_result(msg, content) do
-    tool_call_id = msg[:tool_call_id] || msg["tool_call_id"]
-
-    %{
-      role: "user",
-      content: [
-        %{type: "tool_result", tool_use_id: tool_call_id, content: to_string(content)}
-      ]
-    }
-  end
-
-  defp format_assistant_with_tools(content, tool_calls) do
-    blocks = if content && content != "", do: [%{type: "text", text: content}], else: []
-
-    tool_blocks =
-      Enum.map(tool_calls, fn call ->
-        func = call["function"] || call[:function] || %{}
-        input = parse_tool_input(func["arguments"] || func[:arguments])
-
-        %{
-          type: "tool_use",
-          id: call["id"] || call[:id],
-          name: func["name"] || func[:name],
-          input: input
-        }
-      end)
-
-    %{role: "assistant", content: blocks ++ tool_blocks}
-  end
-
-  defp parse_tool_input(args) when is_binary(args) do
-    case Jason.decode(args) do
-      {:ok, parsed} -> parsed
-      _ -> %{}
-    end
-  end
-
-  defp parse_tool_input(args) when is_map(args), do: args
-  defp parse_tool_input(_), do: %{}
-
-  defp parse_response(%{"content" => content, "usage" => usage} = resp) do
-    text =
-      content
-      |> Enum.filter(fn block -> block["type"] == "text" end)
-      |> Enum.map_join(fn block -> block["text"] end)
-
-    tool_calls =
-      content
-      |> Enum.filter(fn block -> block["type"] == "tool_use" end)
-      |> case do
-        [] ->
-          nil
-
-        calls ->
-          Enum.map(calls, fn c ->
-            %{
-              "id" => c["id"],
-              "type" => "function",
-              "function" => %{"name" => c["name"], "arguments" => Jason.encode!(c["input"])}
-            }
-          end)
-      end
-
-    %CompletionResponse{
-      content: text,
-      tool_calls: tool_calls,
-      model: resp["model"],
-      finish_reason: resp["stop_reason"],
-      usage: %{
-        prompt_tokens: usage["input_tokens"] || 0,
-        completion_tokens: usage["output_tokens"] || 0,
-        total_tokens: (usage["input_tokens"] || 0) + (usage["output_tokens"] || 0)
-      }
-    }
-  end
+  # -- Private (auth & transport) --
 
   defp post(path, body) do
     build_req()
@@ -320,65 +206,4 @@ defmodule Traitee.LLM.Anthropic do
         :not_found -> nil
       end
   end
-
-  defp thinking_model?(model_id), do: MapSet.member?(@thinking_models, model_id)
-
-  defp maybe_put_thinking(map, false), do: map
-
-  defp maybe_put_thinking(map, true) do
-    map
-    |> Map.put(:thinking, %{type: "adaptive"})
-    |> Map.put(:output_config, %{effort: "medium"})
-  end
-
-  defp maybe_put(map, :__skip__, _value), do: map
-  defp maybe_put(map, _key, nil), do: map
-  defp maybe_put(map, key, value), do: Map.put(map, key, value)
-
-  defp maybe_put_tools(map, nil), do: map
-  defp maybe_put_tools(map, []), do: map
-
-  defp maybe_put_tools(map, tools) do
-    anthropic_tools =
-      Enum.map(tools, fn tool ->
-        func = tool["function"] || tool[:function]
-
-        %{
-          name: func["name"] || func[:name],
-          description: func["description"] || func[:description],
-          input_schema: func["parameters"] || func[:parameters]
-        }
-      end)
-
-    Map.put(map, :tools, anthropic_tools)
-  end
-
-  defp merge_consecutive_roles(messages) do
-    messages
-    |> Enum.chunk_while(
-      nil,
-      fn msg, acc ->
-        cond do
-          acc == nil ->
-            {:cont, msg}
-
-          msg.role == acc.role ->
-            merged_content = merge_content(acc.content, msg.content)
-            {:cont, %{acc | content: merged_content}}
-
-          true ->
-            {:cont, acc, msg}
-        end
-      end,
-      fn
-        nil -> {:cont, []}
-        acc -> {:cont, acc, nil}
-      end
-    )
-  end
-
-  defp merge_content(a, b) when is_list(a) and is_list(b), do: a ++ b
-  defp merge_content(a, b) when is_list(a), do: a ++ [%{type: "text", text: to_string(b)}]
-  defp merge_content(a, b) when is_list(b), do: [%{type: "text", text: to_string(a)}] ++ b
-  defp merge_content(a, b), do: to_string(a) <> "\n" <> to_string(b)
 end
