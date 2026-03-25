@@ -56,7 +56,7 @@ Traitee is a **personal AI assistant** — a single-operator, single-host system
 
 ## Security Architecture
 
-Traitee implements two independent security pipelines: an **8-layer cognitive pipeline** that processes every LLM interaction, and a **4-layer filesystem pipeline** that enforces boundaries on every tool execution. Both are always active.
+Traitee implements two independent security pipelines: an **8-layer cognitive pipeline** (with supplementary SystemAuth and Canary subsystems) that processes every LLM interaction, and a **4-layer filesystem pipeline** that enforces boundaries on every tool execution. Both are always active. 16 security modules total.
 
 ### Cognitive Security Pipeline
 
@@ -66,26 +66,31 @@ Protects the LLM's reasoning process from manipulation, on both sides of the LLM
 
 | Layer | Module | Purpose |
 |-------|--------|---------|
-| 1. Sanitizer | `Security.Sanitizer` | Regex-based input classification across 8 threat categories (29 patterns); replaces matched patterns with `[filtered]` |
+| 1. Sanitizer | `Security.Sanitizer` | Regex-based input classification across 8 threat categories (~28 patterns, 4 severity tiers); replaces matched patterns with `[filtered]` |
 | 2. Judge | `Security.Judge` | LLM-as-a-judge detection for attacks that bypass regex (multilingual injection, encoding evasion, social engineering). Fails open on timeout (3s) |
-| 3. Threat Tracker | `Security.ThreatTracker` | Per-session ETS-backed threat accumulator with time-decayed scoring. Escalates threat level across `normal → elevated → high → critical` |
-| 4. Cognitive | `Security.Cognitive` | Persistent identity reinforcement — injects reminders scaled to threat level. Pre-tool reminders treat all tool outputs as untrusted |
+| 3. Threat Tracker | `Security.ThreatTracker` | Per-session ETS-backed threat accumulator with time-decayed scoring (10-minute half-life). Escalates threat level across `normal → elevated → high → critical` |
+| 4. Cognitive | `Security.Cognitive` | Persistent identity reinforcement — injects reminders scaled to threat level (3 strategies: positional, reactive, pre-tool). Pre-tool reminders treat all tool outputs as untrusted |
+
+#### Context Assembly (woven into prompt construction)
+
+| Component | Module | Purpose |
+|-----------|--------|---------|
+| Canary Tokens | `Security.Canary` | Per-session cryptographic canary tokens (`CANARY-<12hex>`) embedded in the system prompt. If the LLM reproduces the token, system prompt leakage is confirmed. Output Guard checks for this on every response |
+| System Auth | `Security.SystemAuth` | Per-session 8-char hex nonces (`[SYS:<nonce>]`) that tag every genuine system message. The LLM is instructed to only trust messages bearing this prefix — defends against user-injected fake system messages. Complements Canary: canary detects prompt *leakage*, SystemAuth verifies message *authenticity* |
 
 #### Outbound
 
 | Layer | Module | Purpose |
 |-------|--------|---------|
-| 5. Output Guard | `Security.OutputGuard` | Post-LLM response validator with 76 patterns across 14 categories: identity drift, prompt leakage, restriction denial, encoded output, and **filesystem secret leakage** (PEM keys, SSH keys, API keys, database URLs with credentials). Critical violations are blocked; others are redacted |
-| 6. Canary | `Security.Canary` | Per-session cryptographic canary tokens embedded in system prompts. Leakage triggers critical-level blocking |
+| 5. Output Guard | `Security.OutputGuard` | Post-LLM response validator with ~70 patterns across 14 categories: identity drift, prompt leakage, restriction denial, instruction compliance, mode switching, exploit acknowledgment, persona adoption, reluctant compliance, authority compliance, encoded output, hypothetical bypass, continuation attacks, manipulation awareness, and **secret leakage** (PEM keys, SSH keys, API keys, database URLs with credentials). Critical violations (canary leakage, secrets) are blocked; others are redacted. All violations feed back into ThreatTracker |
 
 #### Access Control
 
 | Layer | Module | Purpose |
 |-------|--------|---------|
-| 7. Allowlist | `Security.Allowlist` | Per-channel glob-pattern sender allowlists with configurable DM policy |
-| 8. Pairing | `Security.Pairing` | DM approval flow with cryptographic codes, 10-minute expiry, persistent approved-sender storage |
-
-Additionally, `Security.RateLimiter` provides ETS-backed token-bucket rate limiting (default: 30 requests/minute).
+| 6. Allowlist | `Security.Allowlist` | Per-channel glob-pattern sender allowlists with configurable DM policy (`open` / `pairing` / `closed`) |
+| 7. Pairing | `Security.Pairing` | DM approval flow with cryptographic codes (6-char, 10-minute expiry), persistent approved-sender storage (`approved_senders.json`), composite keys (`channel:sender_id`) for cross-channel uniqueness |
+| 8. Rate Limiter | `Security.RateLimiter` | ETS-backed token-bucket rate limiting (default: 30 requests/minute, configurable per key prefix) |
 
 ### Filesystem Security Pipeline
 
@@ -93,10 +98,10 @@ Protects the host filesystem and prevents secret exfiltration through tool execu
 
 | Layer | Module | Purpose |
 |-------|--------|---------|
-| 1. I/O Guards | `Security.IOGuard` | **Always active, independent of sandbox.** Scans tool arguments for 27 sensitive path patterns (`.ssh`, `.aws`, `.env`, `.pem`, `master.key`, `/etc/shadow`, etc.) and 13 dangerous command patterns (`curl\|sh`, fork bombs, reverse shells, `rm -rf /`, etc.). Scans tool output for 15 secret types and redacts them (PEM keys, SSH keys, API keys, JWTs, passwords, database URLs). Wraps entire tool execution in `try/rescue` — if any security module crashes, the operation is **denied** (fail-closed) rather than crashing the session |
-| 2. Hardcoded Denylists | `Security.Filesystem` | **Always active.** 31 path glob patterns (`.ssh/*`, `.aws/*`, `id_rsa*`, `*.pem`, `master.key`, `/etc/shadow`, etc.) and 19 command regex patterns (`curl\|sh`, `nc -e`, `chmod +s`, `certutil`, etc.) that are blocked unconditionally. Environment variable scrubbing strips `KEY`, `SECRET`, `TOKEN`, `PASSWORD`, `CREDENTIAL`, `AUTH` from child process environments |
-| 3. Sandbox | `Security.Sandbox` | **Configurable.** Per-path access control with `allow` / `deny` rules, glob patterns, and per-rule permissions (`read`, `write`, `exec`). Default policy: `deny`, `read_only`, or `allow`. Working directory jail. `~/.traitee` is always accessible |
-| 4. Exec Gates | `Security.ExecGate` | **Configurable.** Approval gates for risky commands with 10 default rules (`rm`, `chmod`, `curl`, `wget`, `docker`, `sudo`, `npm publish`, `pip install`, `git push`, `powershell`). Actions: `approve`, `warn`, `deny`. System directory write protection (`/usr`, `/etc`, `C:\Windows`, `C:\Program Files`, etc.) |
+| 1. I/O Guards | `Security.IOGuard` | **Always active, independent of sandbox.** Scans tool arguments for ~25 sensitive path patterns (`.ssh`, `.aws`, `.env`, `.pem`, `master.key`, `/etc/shadow`, etc.) and 13 dangerous command patterns (`curl\|sh`, fork bombs, reverse shells, `rm -rf /`, etc.). Scans tool output for 15 secret types and redacts them (PEM keys, SSH keys, API keys for OpenAI/xAI/GitHub/GitLab/AWS/Google, JWTs, passwords, database URLs). Wraps entire tool execution in `try/rescue` — if any security module crashes, the operation is **denied** (fail-closed) rather than crashing the session |
+| 2. Hardcoded Denylists | `Security.Filesystem` | **Always active.** ~32 path glob patterns (`.ssh/*`, `.aws/*`, `id_rsa*`, `*.pem`, `master.key`, `/etc/shadow`, `C:/Windows/System32/**`, `/proc/**`, etc.) and ~20 command regex patterns (`curl\|sh`, `nc -e`, `chmod +s`, `certutil`, `powershell -enc`, `reg add HKLM`, etc.) that are blocked unconditionally. Environment variable scrubbing strips `KEY`, `SECRET`, `TOKEN`, `PASSWORD`, `CREDENTIAL`, `AUTH` from child process environments. Symlink resolution prevents bypass via symbolic links |
+| 3. Sandbox | `Security.Sandbox` | **Configurable.** Centralized enforcement facade composing Filesystem, ExecGate, and Docker. Per-path access control with `allow` / `deny` rules, glob patterns, and per-rule permissions (`read`, `write`, `exec`). Default policy: `deny`, `read_only`, or `allow`. Working directory jail. `~/.traitee` is always accessible |
+| 4. Exec Gates | `Security.ExecGate` | **Configurable.** Approval gates for risky commands with 10 default rules (`rm`, `chmod`, `curl`, `wget`, `docker`, `sudo`, `npm publish`, `pip install`, `git push`, `powershell`). Actions: `approve`, `warn`, `deny`. System directory write protection (`/usr`, `/bin`, `/etc`, `C:\Windows`, `C:\Program Files`, etc.) |
 
 **Optional: Docker isolation** (`Security.Docker`) — OS-level container isolation with ephemeral containers, `--read-only` filesystem, `--network none`, memory/CPU/PID limits, dynamic bind mounts from allow rules, and host fallback on Docker unavailability.
 
@@ -104,18 +109,22 @@ Protects the host filesystem and prevents secret exfiltration through tool execu
 
 ## Tool Security
 
-Traitee includes 8 built-in tools. Each can be individually enabled or disabled via config. All tools that touch the filesystem or execute commands pass through the full filesystem security pipeline (IOGuard → Hardcoded Denylists → Sandbox → Exec Gates).
+Traitee includes 12 built-in tools. Each can be individually enabled or disabled via config. All tools that touch the filesystem or execute commands pass through the full filesystem security pipeline (IOGuard → Hardcoded Denylists → Sandbox → Exec Gates).
 
 | Tool | Capabilities | Risk Level |
 |------|-------------|------------|
 | `bash` | Execute shell commands (cmd.exe on Windows, /bin/sh on Unix) | **High** — 30s timeout, 100KB output cap. Enforced through Sandbox: commands are checked against hardcoded denylists, exec gates, and configurable policies. Optional Docker container isolation |
 | `file` | Read, write, append, list, check existence | **High** — 50KB read cap. All paths checked against IOGuard patterns, hardcoded denylists, and configurable per-path allow/deny policies with read/write permissions |
-| `browser` | Full Playwright automation: navigate, click, type, screenshot, evaluate JS | **High** — arbitrary JS execution in Chromium; headless by default |
+| `browser` | Full Playwright automation: navigate, click, type, screenshot, evaluate JS, multi-tab | **High** — arbitrary JS execution in Chromium; headless by default; 14 actions including snapshot (ARIA tree), get_text (15K cap) |
 | `web_search` | SearXNG-based web queries | Low — read-only, 10s timeout |
 | `memory` | Store/recall entities and facts in LTM | Low — scoped to the instance's knowledge graph |
 | `sessions` | List sessions, view history, send inter-session messages | Medium — can access other sessions' context |
 | `cron` | Manage scheduled jobs | Medium — jobs can trigger session messages |
 | `channel_send` | Send messages to any configured channel | Medium — cross-channel message delivery |
+| `skill_manage` | Self-improvement: create, patch, edit, delete, list skills | Medium — modifies the assistant's procedural memory; template skills protected from deletion |
+| `workspace_edit` | Self-improvement: read, patch, append SOUL.md/AGENTS.md/TOOLS.md | Medium — modifies workspace prompts (8K cap, `.bak` backups); changes take effect next session |
+| `delegate_task` | Spawn up to 5 parallel subagents with per-task tool subsets | Medium — subagents get IOGuard protection but not the full cognitive security pipeline (parent already validated input); max 25 tool iterations per subagent |
+| `task_tracker` | Per-session structured todo list (add/update/list/clear) | Low — ETS-backed, scoped to current session; auto-prunes completed tasks after 10 minutes |
 
 **Dynamic tools** can be registered at runtime (bash templates, scripts). They are stored in `~/.traitee/dynamic_tools.json` and cannot override built-in tool names. Dynamic tools are also subject to the full filesystem security pipeline — bash templates pass through Sandbox command checks, and script executors pass through path checks.
 
@@ -125,13 +134,14 @@ Traitee includes 8 built-in tools. Each can be individually enabled or disabled 
 
 Every tool call in the session server passes through this chain:
 
-1. **IOGuard input check** — scans tool arguments for sensitive paths and dangerous commands (independent pattern set)
+1. **IOGuard input check** — scans tool arguments for sensitive paths and dangerous commands (independent pattern set from Filesystem)
 2. **Sandbox enforcement** — hardcoded denylists, configurable allow/deny policies, exec gates
-3. **Tool execution** — wrapped in `try/rescue` (fail-closed: crashes become denials, not session termination)
-4. **IOGuard output check** — scans tool results for leaked secrets (PEM keys, API keys, passwords, etc.) and redacts them
+3. **Tool execution** — wrapped in `try/rescue` via `IOGuard.safe_execute/2` (fail-closed: crashes become denials, not session termination)
+4. **IOGuard output check** — scans tool results for leaked secrets (PEM keys, API keys, passwords, etc.) and redacts them with `[REDACTED:<type>]` markers
 5. **Audit logging** — all security events recorded to the audit trail
+6. **SystemAuth tagging** — any cognitive reminders or task reminders injected between tool rounds are tagged with `[SYS:<nonce>]`
 
-If any step fails or crashes, the tool call returns a safe error message and the session continues normally.
+If any step fails or crashes, the tool call returns a safe error message and the session continues normally. The session tool loop supports up to 50 iterations per message.
 
 ### Tool Hardening Recommendations
 
@@ -151,7 +161,9 @@ If any step fails or crashes, the tool call returns a safe error message and the
 - One session crash does not affect other sessions (OTP supervision with `restart: :transient`).
 - Both security pipelines (cognitive and filesystem) run independently per session.
 - Threat scores are per-session and time-decayed — one user's threat level does not affect another's.
+- Per-session security state includes: canary token (ETS), SystemAuth nonce (ETS), threat events (ETS), and task list (ETS).
 - Tool execution is fail-closed: if any security module crashes during a tool call, the tool returns a safe error and the session continues. Security failures never propagate to session termination.
+- Activity logging (`ActivityLog`) records all tool calls, LLM calls, and subagent events per session in a non-blocking ETS log (max 500 entries/session) for observability without impacting performance.
 
 ## Secrets and Credentials
 

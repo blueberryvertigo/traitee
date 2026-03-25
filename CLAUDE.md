@@ -30,60 +30,76 @@ mix dialyzer           # Type checking (slow first run — builds PLTs)
 ```
 lib/
   traitee/
-    application.ex         OTP supervision tree (~18 children)
-    config.ex              Multi-source TOML config loader
-    router.ex              Inbound message routing
-    session.ex             Session facade
+    application.ex         OTP supervision tree (19 children, 9 ETS table inits)
+    config.ex              Multi-source TOML config loader (:persistent_term)
+    router.ex              Inbound message routing (security + pairing + commands)
+    session.ex             Session facade (Registry + DynamicSupervisor)
+    workspace.ex           Workspace file management (SOUL/AGENTS/TOOLS/BOOT.md)
+    activity_log.ex        Non-blocking ETS activity logger (500 entries/session)
+    doctor.ex              System diagnostics (11 health checks)
     session/               GenServer per user, lifecycle, inter-session
     memory/                3-tier: STM (ETS) → MTM (summaries) → LTM (knowledge graph)
-    context/               Token-aware prompt assembly with budget allocation
+                           + vector (Nx cosine), hybrid search, MMR, temporal decay,
+                           query expansion, batch embedder, compactor
+    context/               Token-aware prompt assembly with budget allocation + continuity
     llm/                   Provider abstraction: OpenAI, Anthropic, xAI, Ollama
-    security/              8-layer cognitive pipeline + 4-layer filesystem pipeline
-                           (sanitizer, judge, threat tracker, io_guard, sandbox,
-                            filesystem, exec_gate, docker, audit, output_guard)
-    tools/                 8 built-in tools (bash, file, browser, web_search, etc.)
-    channels/              Discord, Telegram, WhatsApp, Signal, streaming
-    hooks/                 9 hook points with chainable handlers
-    skills/                Loader + registry (60s filesystem rescan)
-    routing/               Multi-agent router with 5-tier priority
+    security/              16 modules: 8-layer cognitive pipeline + 4-layer filesystem pipeline
+                           (sanitizer, judge, threat_tracker, cognitive, canary, system_auth,
+                            output_guard, io_guard, sandbox, filesystem, exec_gate, docker,
+                            audit, pairing, allowlist, rate_limiter)
+    tools/                 12 built-in tools (bash, file, browser, web_search, memory,
+                           sessions, cron, channel_send, skill_manage, workspace_edit,
+                           delegate_task, task_tracker) + dynamic runtime tools
+    channels/              Discord, Telegram, WhatsApp, Signal, streaming, typing
+    hooks/                 9 hook points with chainable handlers (12 built-in hooks)
+    skills/                Loader (3-tier progressive disclosure) + registry (60s rescan)
+    routing/               Multi-agent router with 5-tier priority + bindings
     cron/                  Scheduler with cron expression parser
     process/               Cross-platform executor + concurrency lanes
-    auto_reply/            Debouncer + command registry + pipeline
+    auto_reply/            Debouncer + command registry (20+ commands) + pipeline
     browser/               Playwright bridge (Node.js JSON-RPC subprocess)
     daemon/                OS service management (Windows/Linux/macOS)
     secrets/               Credential store + manager
     media/                 Pipeline + text extractor
+    delegation/            Parallel subagent orchestration (max 5, max 25 tool iters)
+    cli/                   Terminal display utilities
+    onboard/               Interactive 12-step setup wizard
   traitee_web/
     controllers/           health, webhook, openai_proxy (OpenAI-compatible API)
     channels/              Phoenix WebSocket (chat_channel, user_socket)
   mix/tasks/               10 CLI tasks: chat, serve, send, doctor, memory, cron, daemon, onboard, pairing, security
 config/                    config.exs, dev.exs, test.exs, prod.exs, runtime.exs
 priv/repo/migrations/      SQLite migrations (sessions, messages, summaries, entities, relations, facts, cron_jobs)
-priv/browser/              Node.js Playwright bridge (bridge.js)
-test/                      ~40 test files mirroring lib/ structure
+priv/browser/              Node.js Playwright bridge (bridge.js, 14 actions, multi-tab)
+test/                      ~41 test files mirroring lib/ structure
 ```
 
 ## Architecture
 
 ### Supervision Tree
 
-Single `one_for_one` supervisor starts all services. ETS tables are initialized
+Single `one_for_one` supervisor starts all services. 9 ETS tables are initialized
 **before** the supervision tree to guarantee lock-free reads from boot:
 
 ```
-Traitee.Application
+ETS tables (pre-boot):
+  Tools.Registry, Security.RateLimiter, Security.ThreatTracker,
+  Security.Canary, Security.Filesystem, Memory.Vector,
+  Tools.TaskTracker, ActivityLog, Security.SystemAuth
+
+Traitee.Application (19 children)
 ├── Repo (SQLite/Ecto)
 ├── PubSub (Phoenix — config changes, webchat)
-├── Hooks.Engine (GenServer — 9 hook points)
-├── Config.HotReload (GenServer — 5s file poll)
+├── Hooks.Engine (GenServer — 9 hook points, 12 built-in handlers)
+├── Config.HotReload (GenServer — 5s file poll, PubSub broadcast)
 ├── LLM.Router (GenServer — failover + usage tracking)
 ├── Memory.Compactor (GenServer — async STM→MTM→LTM)
-├── Memory.BatchEmbedder (GenServer — batches of 20)
-├── Skills.Registry (GenServer — 60s rescan)
-├── Security.Audit (GenServer — filesystem audit trail, ETS ring buffer)
-├── Security.Pairing (GenServer — DM approval codes)
+├── Memory.BatchEmbedder (GenServer — batches of 20, 5s tick)
+├── Skills.Registry (GenServer — 60s rescan, :persistent_term cache)
+├── Security.Audit (GenServer — ETS ring buffer 10K events)
+├── Security.Pairing (GenServer — DM approval codes, JSON persistence)
 ├── AutoReply.Debouncer (GenServer — 500ms window)
-├── Cron.Scheduler (GenServer — 15s tick)
+├── Cron.Scheduler (GenServer — 15s tick, 3 job types)
 ├── Registry (session lookup, :unique)
 ├── DynamicSupervisor (sessions — one GenServer per user)
 ├── Channels.Supervisor (Discord, Telegram, WhatsApp, Signal)
@@ -91,6 +107,8 @@ Traitee.Application
 ├── Browser.Supervisor (Node.js Playwright, lazy)
 ├── Process.Lanes (concurrency limiter: tool=3, embed=2, llm=1)
 └── TraiteeWeb.Endpoint (Phoenix/Bandit on :4000)
+
+Post-boot: Hooks.Builtin.register_all/0 (async Task)
 ```
 
 ### Message Flow
@@ -98,7 +116,7 @@ Traitee.Application
 1. **Channel** normalizes inbound → `%{text, sender_id, channel_type, ...}`
 2. **Router** checks allowlist/pairing, commands, resolves agent route
 3. **Session.Server.send_message/4** runs the pipeline:
-   - Sanitizer → Judge → ThreatTracker → STM.push → Context.Engine.assemble → LLM.Router.complete → Tool loop (max 5) → OutputGuard → STM.push → respond
+   - Sanitizer → Judge → ThreatTracker → STM.push → Context.Engine.assemble (+ SystemAuth nonce + Canary token + Cognitive reminders) → LLM.Router.complete → Tool loop (max 50) → OutputGuard → STM.push → respond
 4. Response delivered back through the originating channel
 
 ### Key Design Patterns
@@ -108,7 +126,9 @@ Traitee.Application
 - **Behaviour-driven polymorphism**: `Traitee.Tools.Tool`, `Traitee.LLM.Provider`, `Traitee.Process.ExecutorBehaviour`
 - **Token budget management**: `Context.Budget` with tiered allocation; unused LTM/MTM capacity cascades to STM
 - **Pipeline composition**: Security and auto-reply are composable multi-stage pipelines
+- **System message authentication**: `Security.SystemAuth` nonces tag genuine system messages — LLM verifies `[SYS:xxxx]` prefix
 - **Hot reload**: Config polled every 5s, changes broadcast via PubSub — no restart needed
+- **Non-blocking logging**: `ActivityLog` ETS writes for tool calls, LLM calls, subagent events — never blocks the pipeline
 
 ## Coding Conventions
 
@@ -153,8 +173,9 @@ mix test --partitions 2                         # Sharded (CI uses this)
 
 - **ExUnit** with **Ecto.Adapters.SQL.Sandbox** in `:manual` mode
 - **Mox mocks**: `Traitee.LLM.RouterMock`, `Traitee.Process.ExecutorMock`
-- **Fixtures**: `test/support/fixtures.ex` — factory functions for common structs
+- **Fixtures**: `test/support/fixtures.ex` — factory functions for CompletionRequest/Response, ModelInfo, cron jobs, config maps
 - **Helpers**: `test/support/test_helpers.ex` — unique session IDs, temp dirs, fake embeddings, ETS setup
+- **Data Case**: `test/support/data_case.ex` — Ecto sandbox setup for DB tests
 - **Tags excluded by default**: `:integration`, `:live`, `:slow`
 - Tests use `async: true` for pure-logic modules (Sanitizer, Budget) and `async: false` for ETS/DB-dependent ones
 - **Coverage**: ExCoveralls, 60% minimum threshold
