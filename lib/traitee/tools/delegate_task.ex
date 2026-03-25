@@ -10,6 +10,7 @@ defmodule Traitee.Tools.DelegateTask do
 
   @behaviour Traitee.Tools.Tool
 
+  alias IO.ANSI
   alias Traitee.Delegation.Runner
 
   @impl true
@@ -50,10 +51,22 @@ defmodule Traitee.Tools.DelegateTask do
                 "items" => %{"type" => "string"},
                 "description" =>
                   "Tool names this subagent can use (e.g. ['bash', 'file', 'web_search'])"
+              },
+              "max_tool_calls" => %{
+                "type" => "integer",
+                "description" =>
+                  "Max tool call rounds for this subagent (default: 10, max: 25). " <>
+                    "Choose based on task complexity: 3-5 for simple lookups, 10+ for multi-step work."
               }
             },
             "required" => ["tag", "description", "tools"]
           }
+        },
+        "max_tool_calls" => %{
+          "type" => "integer",
+          "description" =>
+            "Default max tool call rounds for all subagents (default: 10, max: 25). " <>
+              "Per-task max_tool_calls overrides this."
         },
         "timeout" => %{
           "type" => "integer",
@@ -70,12 +83,15 @@ defmodule Traitee.Tools.DelegateTask do
 
   @impl true
   def execute(%{"tasks" => tasks} = args) when is_list(tasks) and tasks != [] do
+    default_max = args["max_tool_calls"]
+
     parsed_tasks =
       Enum.map(tasks, fn task ->
         %{
           tag: task["tag"] || "unnamed",
           description: task["description"] || "",
-          tools: task["tools"] || []
+          tools: task["tools"] || [],
+          max_tool_calls: task["max_tool_calls"] || default_max
         }
       end)
 
@@ -87,20 +103,23 @@ defmodule Traitee.Tools.DelegateTask do
       session_id = args["_session_id"]
 
       opts =
-        [session_id: session_id]
+        [session_id: session_id, quiet: true]
         |> maybe_put(:timeout, args["timeout"])
         |> maybe_put(:system_prompt, args["system_prompt"])
+
+      tag_list = Enum.join(tags, ", ")
+
+      IO.puts("#{ANSI.yellow()}  ▸ Dispatched: #{tag_list}#{ANSI.reset()}")
 
       Task.start(fn ->
         {:ok, results} = Runner.run(parsed_tasks, opts)
         Traitee.Session.inject_async_result(session_id, results)
       end)
 
-      tag_list = Enum.join(tags, ", ")
-
       {:ok,
        "Subagents dispatched: #{tag_list}. They are working in the background — " <>
-         "results will be available in your next turn. Respond to the user now."}
+         "results will be available in your next turn. " <>
+         "Confirm to the user that you've delegated the work and what each subagent is doing."}
     end
   end
 

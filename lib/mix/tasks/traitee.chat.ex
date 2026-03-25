@@ -31,6 +31,8 @@ defmodule Mix.Tasks.Traitee.Chat do
         aliases: [s: :session]
       )
 
+    Logger.configure(level: :warning)
+
     session_id = opts[:session] || default_session_id()
     {:ok, pid} = Session.ensure_started(session_id, :cli)
 

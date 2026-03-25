@@ -253,16 +253,24 @@ defmodule Traitee.Session.Server do
         when is_list(tool_calls) and tool_calls != [] ->
           tool_results = execute_tools(tool_calls, state)
 
-          tool_reminder =
-            if Cognitive.enabled?(), do: [Cognitive.tool_reminder()], else: []
+          if only_delegation?(tool_calls) do
+            tags = extract_delegation_tags(tool_results)
 
-          updated_messages =
-            messages ++
-              [%{role: "assistant", content: content, tool_calls: tool_calls}] ++
-              tool_results ++
-              tool_reminder
+            {:ok,
+             "I've dispatched subagents to work on this#{if tags != "", do: ": #{tags}", else: ""}. " <>
+               "Results will arrive shortly."}
+          else
+            tool_reminder =
+              if Cognitive.enabled?(), do: [Cognitive.tool_reminder()], else: []
 
-          run_completion_loop(updated_messages, tools, depth + 1, state)
+            updated_messages =
+              messages ++
+                [%{role: "assistant", content: content, tool_calls: tool_calls}] ++
+                tool_results ++
+                tool_reminder
+
+            run_completion_loop(updated_messages, tools, depth + 1, state)
+          end
 
         {:ok, %{content: content}} ->
           {:ok, content}
@@ -379,6 +387,23 @@ defmodule Traitee.Session.Server do
     else
       state
     end
+  end
+
+  defp only_delegation?(tool_calls) do
+    Enum.all?(tool_calls, fn call ->
+      get_in(call, ["function", "name"]) == "delegate_task"
+    end)
+  end
+
+  defp extract_delegation_tags(tool_results) do
+    tool_results
+    |> Enum.filter(&(&1[:name] == "delegate_task"))
+    |> Enum.map_join(", ", fn r ->
+      case Regex.run(~r/Subagents dispatched: (.+?)\./, r[:content] || "") do
+        [_, tags] -> tags
+        _ -> ""
+      end
+    end)
   end
 
   defp parse_args(args) when is_binary(args) do
