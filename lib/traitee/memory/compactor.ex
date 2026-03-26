@@ -85,9 +85,11 @@ defmodule Traitee.Memory.Compactor do
     case result do
       :ok ->
         Logger.debug("Compaction complete for session #{session_id}")
+        broadcast_compaction(session_id, :completed, %{})
 
       {:error, reason} ->
         Logger.warning("Compaction failed for #{session_id}: #{inspect(reason)}")
+        broadcast_compaction(session_id, :failed, %{reason: reason})
     end
 
     {:noreply, state}
@@ -100,6 +102,8 @@ defmodule Traitee.Memory.Compactor do
 
   defp process_chunk_async(session_id, messages) do
     parent = self()
+
+    broadcast_compaction(session_id, :started, %{message_count: length(messages)})
 
     Task.start(fn ->
       result = process_chunk(session_id, messages)
@@ -206,6 +210,17 @@ defmodule Traitee.Memory.Compactor do
 
   defp router_mod do
     Application.get_env(:traitee, :compactor_router, Router)
+  end
+
+  @doc "PubSub topic for compaction events on a given session."
+  def topic(session_id), do: "compaction:#{session_id}"
+
+  defp broadcast_compaction(session_id, event, meta) do
+    Phoenix.PubSub.broadcast(
+      Traitee.PubSub,
+      topic(session_id),
+      {:compaction, event, Map.put(meta, :session_id, session_id)}
+    )
   end
 
   defp config_chunk_size do
