@@ -12,6 +12,7 @@ defmodule Mix.Tasks.Traitee.Chat do
 
   alias Traitee.AutoReply.CommandRegistry
   alias Traitee.CLI.Display
+  alias Traitee.Context.StatusBar
   alias Traitee.Session
   alias Traitee.Session.Server, as: SessionServer
   alias Traitee.Tools.TaskTracker
@@ -39,12 +40,15 @@ defmodule Mix.Tasks.Traitee.Chat do
     session_id = opts[:session] || default_session_id()
     {:ok, pid} = Session.ensure_started(session_id, :cli)
 
+    Phoenix.PubSub.subscribe(Traitee.PubSub, Traitee.Memory.Compactor.topic(session_id))
+
     IO.puts(Display.chat_banner(session_id))
     loop(session_id, pid, opts)
   end
 
   defp loop(session_id, pid, opts) do
     maybe_show_delegation_results(pid)
+    drain_compaction_events()
 
     case IO.gets(Display.user_prompt()) do
       :eof ->
@@ -72,6 +76,7 @@ defmodule Mix.Tasks.Traitee.Chat do
                 IO.write(Display.assistant_prefix())
                 IO.puts("#{IO.ANSI.white()}#{response}#{IO.ANSI.reset()}")
                 IO.puts("")
+                print_status_bar(pid)
                 loop(session_id, pid, opts)
 
               {:error, reason} ->
@@ -96,6 +101,39 @@ defmodule Mix.Tasks.Traitee.Chat do
     end
   end
 
+  defp print_status_bar(pid) do
+    state = SessionServer.get_state(pid)
+
+    status_data = StatusBar.from_session(%{
+      model: state.model,
+      budget: state.last_budget,
+      stm_count: state.stm_size,
+      stm_capacity: state.stm_capacity,
+      session_start: state.created_at,
+      compaction_state: state.compaction_state
+    })
+
+    IO.write(StatusBar.render_ansi(status_data))
+    IO.puts("")
+  end
+
+  defp drain_compaction_events do
+    receive do
+      {:compaction, :completed, _meta} ->
+        IO.puts("\e[36m[compaction completed]\e[0m")
+        drain_compaction_events()
+
+      {:compaction, :started, _meta} ->
+        drain_compaction_events()
+
+      {:compaction, :failed, _meta} ->
+        IO.puts("\e[31m[compaction failed]\e[0m")
+        drain_compaction_events()
+    after
+      0 -> :ok
+    end
+  end
+
   defp handle_command("/quit", session_id, _pid, _opts) do
     Session.terminate(session_id)
     IO.puts(Display.goodbye())
@@ -103,9 +141,11 @@ defmodule Mix.Tasks.Traitee.Chat do
   end
 
   defp handle_command("/new" <> _, old_session_id, _old_pid, _opts) do
+    Phoenix.PubSub.unsubscribe(Traitee.PubSub, Traitee.Memory.Compactor.topic(old_session_id))
     Session.terminate(old_session_id)
     new_session_id = default_session_id()
     {:ok, new_pid} = Session.ensure_started(new_session_id, :cli)
+    Phoenix.PubSub.subscribe(Traitee.PubSub, Traitee.Memory.Compactor.topic(new_session_id))
     IO.puts(Display.system_msg("Conversation reset."))
     {new_session_id, new_pid}
   end
@@ -173,7 +213,8 @@ defmodule Mix.Tasks.Traitee.Chat do
 
     IO.puts(
       Display.format_help(
-        help <> "\n/threats — Show threat level and recent events\n/quit — Exit the REPL"
+        help <> "\n/threats — Show threat level and recent events\n/quit — Exit the REPL" <>
+          "\n\nContext status bar is shown after each response."
       )
     )
 

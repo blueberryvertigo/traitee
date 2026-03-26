@@ -42,6 +42,8 @@ defmodule Traitee.Session.Server do
     :stm_state,
     :created_at,
     :message_count,
+    :last_budget,
+    :compaction_state,
     channels: %{},
     delegations_expected: 0,
     delegation_results: []
@@ -146,14 +148,20 @@ defmodule Traitee.Session.Server do
 
   @impl true
   def handle_call(:get_state, _from, state) do
+    model = Traitee.Config.get([:agent, :model]) || "openai/gpt-4o"
+
     summary = %{
       session_id: state.session_id,
       channel: state.channel,
       message_count: state.message_count,
       stm_size: STM.count(state.stm_state),
+      stm_capacity: state.stm_state.capacity,
       stm_tokens: STM.total_tokens(state.stm_state),
       created_at: state.created_at,
-      channels: state.channels
+      channels: state.channels,
+      model: model,
+      last_budget: state.last_budget,
+      compaction_state: state.compaction_state || :idle
     }
 
     {:reply, summary, state}
@@ -254,7 +262,7 @@ defmodule Traitee.Session.Server do
 
     tools = ToolRegistry.tool_schemas()
 
-    {messages, _budget} =
+    {messages, budget} =
       Engine.assemble(
         state.session_id,
         state.stm_state,
@@ -264,6 +272,8 @@ defmodule Traitee.Session.Server do
         has_recent_threats: has_recent_threats,
         channel: channel
       )
+
+    state = %{state | last_budget: budget}
 
     stm_state = STM.push(state.stm_state, "user", sanitized_text, channel: channel)
     state = %{state | stm_state: stm_state, message_count: state.message_count + 1}
@@ -277,6 +287,9 @@ defmodule Traitee.Session.Server do
 
         stm_state = maybe_push_delegation_anchor(stm_state, response_text)
         state = %{state | stm_state: stm_state}
+
+        compaction_state = detect_compaction_state(stm_state)
+        state = %{state | compaction_state: compaction_state}
 
         Continuity.persist_session(state.session_id, %{
           message_count: state.message_count
@@ -535,6 +548,18 @@ defmodule Traitee.Session.Server do
         _ -> ""
       end
     end)
+  end
+
+  defp detect_compaction_state(stm_state) do
+    count = STM.count(stm_state)
+    cap = stm_state.capacity
+    fill = if cap > 0, do: count / cap, else: 0.0
+
+    cond do
+      fill >= 0.90 -> :critical
+      fill >= 0.75 -> :near
+      true -> :idle
+    end
   end
 
   defp parse_args(args) when is_binary(args) do

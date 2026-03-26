@@ -71,6 +71,12 @@ defmodule Traitee.AutoReply.CommandRegistry do
       requires_owner: false,
       hidden: false
     },
+    "context" => %{
+      handler: :cmd_context,
+      description: "Show context window status bar",
+      requires_owner: false,
+      hidden: false
+    },
     "help" => %{
       handler: :cmd_help,
       description: "List commands",
@@ -236,6 +242,35 @@ defmodule Traitee.AutoReply.CommandRegistry do
     Compactor.flush(session_id)
     {:ok, "Compaction triggered."}
   end
+
+  def cmd_context(_args, %{session_pid: pid}) do
+    alias Traitee.Context.StatusBar
+
+    state = Traitee.Session.Server.get_state(pid)
+
+    status_data = StatusBar.from_session(%{
+      model: state.model,
+      budget: state.last_budget,
+      stm_count: state.stm_size,
+      stm_capacity: state.stm_capacity,
+      session_start: state.created_at,
+      compaction_state: state.compaction_state
+    })
+
+    bar = StatusBar.render(status_data)
+
+    detail =
+      if state.last_budget do
+        budget = state.last_budget
+        "\n" <> Traitee.Context.Budget.budget_summary(budget)
+      else
+        "\n(No context assembly yet — send a message first)"
+      end
+
+    {:ok, bar <> detail}
+  end
+
+  def cmd_context(_args, _ctx), do: {:ok, "No active session."}
 
   def cmd_help(_args, _ctx), do: {:ok, help_text()}
 
