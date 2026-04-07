@@ -28,7 +28,13 @@ defmodule Traitee.LLM.Ollama do
       options: build_options(request)
     }
 
-    case Req.post(base_url() <> "/api/chat", json: body, receive_timeout: 120_000, retry: false) do
+    case Req.post(base_url() <> "/api/chat",
+           json: body,
+           receive_timeout: 120_000,
+           retry: :transient,
+           retry_delay: &retry_delay/1,
+           max_retries: 3
+         ) do
       {:ok, %{status: 200, body: resp}} ->
         {:ok, parse_response(resp, request.model)}
 
@@ -156,4 +162,6 @@ defmodule Traitee.LLM.Ollama do
   defp embedding_model do
     Traitee.Config.get([:memory, :embedding_model]) || "nomic-embed-text"
   end
+
+  defp retry_delay(attempt), do: Integer.pow(2, attempt) * 1_000
 end

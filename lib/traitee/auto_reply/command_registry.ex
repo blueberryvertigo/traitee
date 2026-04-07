@@ -108,6 +108,30 @@ defmodule Traitee.AutoReply.CommandRegistry do
       requires_owner: true,
       cli_only: true,
       hidden: false
+    },
+    "dream" => %{
+      handler: :cmd_dream,
+      description: "Dream state — /dream [status|now]",
+      requires_owner: true,
+      hidden: false
+    },
+    "workshop" => %{
+      handler: :cmd_workshop,
+      description: "Workshop — /workshop [status|list|build <id>]",
+      requires_owner: true,
+      hidden: false
+    },
+    "cognition" => %{
+      handler: :cmd_cognition,
+      description: "Cognition status — interests, dream, workshop, metacognition",
+      requires_owner: true,
+      hidden: false
+    },
+    "qc" => %{
+      handler: :cmd_qc,
+      description: "Quality control — /qc [status|review <project_id>]",
+      requires_owner: true,
+      hidden: false
     }
   }
 
@@ -171,13 +195,15 @@ defmodule Traitee.AutoReply.CommandRegistry do
 
   def cmd_model([], _ctx), do: {:ok, "Current model: #{Traitee.Config.get([:agent, :model])}"}
 
-  def cmd_model([name | _], _ctx) do
-    {:ok, "Model set to: #{name} (takes effect next message)"}
+  def cmd_model([name | _], %{inbound: inbound}) do
+    configure_session(inbound, :model, name)
+    {:ok, "Model set to: #{name}"}
   end
 
   def cmd_think([], _ctx), do: {:ok, "Usage: /think off|low|medium|high"}
 
-  def cmd_think([level | _], _ctx) when level in ~w(off minimal low medium high) do
+  def cmd_think([level | _], %{inbound: inbound}) when level in ~w(off minimal low medium high) do
+    configure_session(inbound, :thinking, String.to_existing_atom(level))
     {:ok, "Thinking level set to: #{level}"}
   end
 
@@ -185,7 +211,8 @@ defmodule Traitee.AutoReply.CommandRegistry do
 
   def cmd_verbose([], _ctx), do: {:ok, "Usage: /verbose on|off"}
 
-  def cmd_verbose([mode | _], _ctx) when mode in ~w(on off) do
+  def cmd_verbose([mode | _], %{inbound: inbound}) when mode in ~w(on off) do
+    configure_session(inbound, :verbose, String.to_existing_atom(mode))
     {:ok, "Verbose mode: #{mode}"}
   end
 
@@ -411,7 +438,163 @@ defmodule Traitee.AutoReply.CommandRegistry do
     {:ok, ThreatTracker.summary(session_id)}
   end
 
+  # -- Cognition Commands --
+
+  def cmd_dream(["now" | _], _ctx) do
+    Traitee.Cognition.Dream.dream_now()
+    {:ok, "Dream cycle triggered. Running in background."}
+  end
+
+  def cmd_dream(_args, _ctx) do
+    status = Traitee.Cognition.Dream.status()
+
+    last =
+      case status.last_dream do
+        nil -> "never"
+        dt -> "#{DateTime.to_string(dt)}"
+      end
+
+    text =
+      "Dream State\n" <>
+        "  Enabled: #{status.enabled}\n" <>
+        "  Last dream: #{last}\n" <>
+        "  Curiosity queue: #{status.curiosity_queue_size} topics\n" <>
+        "  Tokens used (last cycle): #{status.tokens_used_last_cycle}"
+
+    {:ok, text}
+  rescue
+    _ -> {:ok, "Dream state not available (cognition may be disabled)."}
+  end
+
+  def cmd_workshop(["list" | _], _ctx) do
+    import Ecto.Query
+
+    projects =
+      Traitee.Cognition.Schema.WorkshopProject
+      |> order_by([p], desc: p.inserted_at)
+      |> limit(20)
+      |> Traitee.Repo.all()
+
+    if projects == [] do
+      {:ok, "No workshop projects yet. The Dream State generates ideas when idle."}
+    else
+      lines =
+        Enum.map(projects, fn p ->
+          "  #{p.name} [#{p.project_type}] #{p.status}\n    #{p.description || "(no description)"}"
+        end)
+
+      {:ok, "Workshop Projects (#{length(projects)})\n" <> Enum.join(lines, "\n")}
+    end
+  rescue
+    _ -> {:ok, "Workshop not available."}
+  end
+
+  def cmd_workshop(["build", id | _], _ctx) do
+    case Integer.parse(id) do
+      {project_id, _} ->
+        Traitee.Cognition.Workshop.enqueue(project_id)
+        {:ok, "Project #{project_id} queued for building."}
+
+      :error ->
+        {:ok, "Usage: /workshop build <project_id>"}
+    end
+  end
+
+  def cmd_workshop(_args, _ctx) do
+    status = Traitee.Cognition.Workshop.status()
+
+    current =
+      case status.current_project do
+        nil -> "none"
+        id -> "project ##{id}"
+      end
+
+    text =
+      "Workshop\n" <>
+        "  Enabled: #{status.enabled}\n" <>
+        "  Currently building: #{current}\n" <>
+        "  Queue: #{status.queue_size}\n" <>
+        "  Completed: #{status.completed_count}"
+
+    {:ok, text}
+  rescue
+    _ -> {:ok, "Workshop not available (cognition may be disabled)."}
+  end
+
+  def cmd_cognition(_args, %{inbound: inbound}) do
+    owner_id =
+      Traitee.Config.get([:security, :owner_id]) || to_string(inbound.sender_id)
+
+    interests =
+      Traitee.Cognition.UserModel.top_interests(owner_id, 5)
+      |> Enum.map_join(", ", fn i -> "#{i.topic} (#{Float.round(Traitee.Cognition.Interest.score(i), 2)})" end)
+
+    desires =
+      Traitee.Cognition.UserModel.desires(owner_id)
+      |> Enum.take(5)
+      |> Enum.join("; ")
+
+    dream = Traitee.Cognition.Dream.status()
+    workshop = Traitee.Cognition.Workshop.status()
+    meta = Traitee.Cognition.Metacognition.summary()
+
+    text =
+      "Cognition Overview\n" <>
+        "\n  Top Interests: #{if interests == "", do: "(none yet)", else: interests}" <>
+        "\n  Desires: #{if desires == "", do: "(none yet)", else: desires}" <>
+        "\n\n  Dream: last=#{dream.last_dream || "never"}, curiosity=#{dream.curiosity_queue_size}" <>
+        "\n  Workshop: building=#{workshop.current_project || "none"}, queue=#{workshop.queue_size}, done=#{workshop.completed_count}" <>
+        "\n  Meta: claims=#{meta.total_claims}, calibration=#{meta.calibration_score || "n/a"}, improvements=#{meta.improvements_made}"
+
+    {:ok, text}
+  rescue
+    _ -> {:ok, "Cognition not available."}
+  end
+
+  def cmd_qc(["review", id | _], _ctx) do
+    case Integer.parse(id) do
+      {project_id, _} ->
+        Traitee.Cognition.QualityControl.review_project(project_id)
+        {:ok, "QC review triggered for project ##{project_id}."}
+
+      :error ->
+        {:ok, "Usage: /qc review <project_id>"}
+    end
+  end
+
+  def cmd_qc(_args, _ctx) do
+    status = Traitee.Cognition.QualityControl.status()
+
+    rate =
+      case status.approval_rate do
+        nil -> "n/a"
+        r -> "#{Float.round(r * 100, 1)}%"
+      end
+
+    text =
+      "Quality Control\n" <>
+        "  Enabled: #{status.enabled}\n" <>
+        "  Evaluations: #{status.evaluations}\n" <>
+        "  Approved: #{status.approvals} | Rejected: #{status.rejections}\n" <>
+        "  Approval rate: #{rate}"
+
+    {:ok, text}
+  rescue
+    _ -> {:ok, "QC not available (cognition may be disabled)."}
+  end
+
   # -- Helpers --
+
+  defp configure_session(inbound, key, value) do
+    session_id = build_session_id(inbound)
+
+    case Registry.lookup(Traitee.Session.Registry, session_id) do
+      [{pid, _}] -> Traitee.Session.Server.configure(pid, key, value)
+      _ -> :ok
+    end
+  rescue
+    _ -> :ok
+  end
 
   defp build_session_id(%{sender_id: sid, channel_type: ch}) do
     AgentRouter.build_session_key(

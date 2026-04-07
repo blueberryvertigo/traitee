@@ -219,9 +219,13 @@ defmodule Traitee.LLM.XAI do
         {"content-type", "application/json"}
       ],
       receive_timeout: 120_000,
-      retry: false
+      retry: :transient,
+      retry_delay: &retry_delay/1,
+      max_retries: 3
     )
   end
+
+  defp retry_delay(attempt), do: Integer.pow(2, attempt) * 1_000
 
   defp api_key do
     Application.get_env(:traitee, :xai_api_key) ||

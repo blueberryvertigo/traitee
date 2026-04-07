@@ -17,7 +17,9 @@ Traitee is a personal AI assistant gateway. Connect it to Discord, Telegram, Wha
 
 **12 built-in tools.** Shell execution, file operations, Playwright browser automation, web search, memory management, inter-session communication, cron scheduling, cross-channel messaging, self-improving skills, workspace editing, parallel subagent delegation, and structured task tracking.
 
-**Self-improving.** The assistant can create and refine its own skills, edit its workspace prompts, and delegate parallel subtasks to lightweight subagents — all within security boundaries.
+**Autonomous cognition.** Between conversations, the agent enters a dream state — researching topics it's curious about, consolidating memory, generating project ideas, and autonomously building tools, skills, and code artifacts tailored to your interests. A quality control agent validates everything before it reaches you. The agent tracks your interests, expertise, and desires over time, and uses metacognition to monitor its own performance and self-improve.
+
+**Self-improving.** The assistant can create and refine its own skills, edit its workspace prompts, and delegate parallel subtasks to lightweight subagents — all within security boundaries. Metacognition detects failure patterns and triggers self-modification.
 
 **OpenAI-compatible API.** Drop `http://localhost:4000/v1/` into any tool that speaks OpenAI's API (Cursor, VS Code extensions, scripts) and get hierarchical memory for free.
 
@@ -117,8 +119,9 @@ Automatic failover between primary and fallback providers. Usage tracking per se
 | `workspace_edit` | Read/patch workspace prompts (SOUL.md, AGENTS.md, TOOLS.md) |
 | `delegate_task` | Spawn up to 5 parallel subagents with filtered tool sets + real-time progress tracking |
 | `task_tracker` | Structured per-session todo list |
+| `cognition` | Introspect dream state, workshop projects, user interests, QC status, metacognition |
 
-All filesystem/command tools pass through the full security pipeline. Dynamic tools can be registered at runtime.
+All filesystem/command tools pass through the full security pipeline. Dynamic tools can be registered at runtime. The Workshop autonomously creates new dynamic tools based on user interests.
 
 ---
 
@@ -131,6 +134,50 @@ Two independent pipelines protect every interaction:
 **Filesystem (tool side):** I/O Guards (fail-closed) → Hardcoded Denylists (~32 path + ~20 command patterns, always on) → Configurable Sandbox (allow/deny with glob patterns) → Exec Gates (approval for risky commands) → Optional Docker isolation → Audit Trail (10K event ring buffer).
 
 See [SECURITY.md](SECURITY.md) for the full architecture, threat model, trust boundaries, and hardening checklist.
+
+---
+
+## Cognition
+
+Traitee has an autonomous cognitive architecture that runs between conversations. Five GenServers under `Traitee.Cognition.Supervisor`:
+
+| Module | What it does |
+|--------|-------------|
+| **User Model** | Tracks interests, expertise, desires, active projects, and communication style per user. Extracts signals from every conversation via lightweight LLM calls. Persists to SQLite. |
+| **Dream State** | Activates when no sessions are active. Runs four cycles: memory consolidation (dedup entities, connect orphans, score importance), auto-research (web search + synthesize into LTM), ideation (generate project ideas from interests), and self-reflection (analyze performance, identify patterns). |
+| **Workshop** | Autonomous builder. Takes ideas from the Dream State and builds them: dynamic tools, skills, code projects, and research briefs. Uses file/bash tools through an LLM-driven research → design → build → validate pipeline. |
+| **Quality Control** | Gates everything before it reaches the user. Validates workshop projects (completeness, usefulness, correctness). Audits research quality. Sends work back with specific feedback. Hard loop limits: max 3 project revisions, max 2 research retries, 30s evaluation timeout. |
+| **Metacognition** | Monitors agent performance. Confidence calibration, failure pattern detection, workshop feedback loops, and self-modification via SOUL.md and skill updates. |
+
+### Dream Triggers
+
+The Dream State activates when:
+- The last session ends and there are curiosity items queued (30s grace period)
+- The curiosity queue hits 5+ items and no sessions are active
+- The configured interval elapses (default 2 hours) with no active sessions
+- Manually via `/dream now` or the `cognition` tool
+
+### Configuration
+
+```toml
+[cognition]
+enabled = true
+autonomy_level = "build"       # observe_only | suggest | build
+dream_interval_minutes = 120
+dream_token_budget = 50000
+workshop_token_budget = 100000
+```
+
+### Commands
+
+```
+/cognition    Full cognitive dashboard (interests, dream, workshop, QC, meta)
+/dream        Dream state status, or /dream now to trigger
+/workshop     Workshop status, /workshop list, /workshop build <id>
+/qc           Quality control stats, /qc review <id>
+```
+
+The agent can also introspect its own cognition via the `cognition` tool during conversations.
 
 ---
 
@@ -177,6 +224,8 @@ mix traitee.cron        Scheduled job management
 mix traitee.daemon      OS service install/start/stop/status
 mix traitee.pairing     Sender approval management
 ```
+
+In-session slash commands include `/cognition`, `/dream`, `/workshop`, `/qc`, `/model`, `/think`, `/verbose`, and more. Type `/help` for the full list.
 
 ---
 

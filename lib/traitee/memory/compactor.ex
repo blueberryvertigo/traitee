@@ -12,7 +12,7 @@ defmodule Traitee.Memory.Compactor do
   use GenServer
 
   alias Traitee.LLM.Router
-  alias Traitee.Memory.{LTM, MTM, Vector}
+  alias Traitee.Memory.{BatchEmbedder, LTM, MTM, Vector}
 
   require Logger
 
@@ -139,6 +139,8 @@ defmodule Traitee.Memory.Compactor do
         Vector.store(:summary, summary.id, embedding)
       end
 
+      enqueue_entity_embeddings(entities)
+
       :ok
     else
       {:error, reason} ->
@@ -186,7 +188,13 @@ defmodule Traitee.Memory.Compactor do
       {:ok, entity} = LTM.upsert_entity(name, type)
 
       Enum.each(facts, fn fact_content ->
-        LTM.add_fact(entity.id, fact_content, "extracted", summary_id)
+        case LTM.add_fact(entity.id, fact_content, "extracted", summary_id) do
+          {:ok, fact} ->
+            BatchEmbedder.enqueue(:fact, fact.id, fact_content)
+
+          _ ->
+            :ok
+        end
       end)
 
       Enum.each(relations, fn rel ->
@@ -200,6 +208,21 @@ defmodule Traitee.Memory.Compactor do
         end
       end)
     end)
+  end
+
+  defp enqueue_entity_embeddings(entities) do
+    Enum.each(entities, fn entity_data ->
+      name = entity_data["name"]
+      type = entity_data["type"] || "other"
+      desc = entity_data["description"] || name
+
+      case LTM.get_entity_by_name(name, type) do
+        %{id: id} -> BatchEmbedder.enqueue(:entity, id, "#{name}: #{desc}")
+        _ -> :ok
+      end
+    end)
+  rescue
+    _ -> :ok
   end
 
   defp extract_topics(entities) do

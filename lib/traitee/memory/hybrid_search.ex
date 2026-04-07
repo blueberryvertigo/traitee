@@ -2,7 +2,7 @@ defmodule Traitee.Memory.HybridSearch do
   @moduledoc "Hybrid vector + keyword search with configurable weights and MMR diversity."
 
   alias Traitee.LLM.Router
-  alias Traitee.Memory.{LTM, MMR, MTM, TemporalDecay, Vector}
+  alias Traitee.Memory.{LTM, MMR, MTM, QueryExpansion, TemporalDecay, Vector}
 
   @default_opts [
     limit: 10,
@@ -27,8 +27,9 @@ defmodule Traitee.Memory.HybridSearch do
   def search(query, session_id, opts \\ []) do
     opts = Keyword.merge(@default_opts, opts)
 
-    vector_results = vector_search(query, opts)
-    text_results = keyword_search(query, session_id)
+    expanded_queries = QueryExpansion.expand(query)
+    vector_results = expanded_vector_search(expanded_queries, opts)
+    text_results = expanded_keyword_search(expanded_queries, session_id)
 
     merged =
       merge_results(vector_results, text_results, opts[:vector_weight], opts[:text_weight])
@@ -39,6 +40,26 @@ defmodule Traitee.Memory.HybridSearch do
     |> apply_diversity(opts[:limit], opts[:diversity])
     |> TemporalDecay.apply()
     |> Enum.take(opts[:limit])
+  end
+
+  defp expanded_vector_search(queries, opts) do
+    queries
+    |> Enum.flat_map(&vector_search(&1, opts))
+    |> dedupe_max_score()
+  end
+
+  defp expanded_keyword_search(queries, session_id) do
+    queries
+    |> Enum.flat_map(&keyword_search(&1, session_id))
+    |> dedupe_max_score()
+  end
+
+  defp dedupe_max_score(results) do
+    results
+    |> Enum.group_by(&{&1.source, &1.id})
+    |> Enum.map(fn {_key, group} ->
+      Enum.max_by(group, & &1.score)
+    end)
   end
 
   defp vector_search(query, opts) do
