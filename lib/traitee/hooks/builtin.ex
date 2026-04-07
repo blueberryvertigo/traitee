@@ -14,6 +14,7 @@ defmodule Traitee.Hooks.Builtin do
     Engine.register(:after_message, :builtin_log_response, &log_response/1)
     Engine.register(:after_message, :builtin_track_tokens, &track_token_usage/1)
     Engine.register(:after_message, :builtin_output_guard, &run_output_guard/1)
+    Engine.register(:after_message, :builtin_cognition_observe, &cognition_observe/1)
     Engine.register(:before_tool, :builtin_log_tool, &log_tool_invocation/1)
     Engine.register(:after_tool, :builtin_log_tool_result, &log_tool_result/1)
     Engine.register(:on_error, :builtin_log_error, &log_error/1)
@@ -198,4 +199,20 @@ defmodule Traitee.Hooks.Builtin do
   end
 
   defp cognitive_session_summary(ctx), do: {:ok, ctx}
+
+  # -- Cognition hooks --
+
+  defp cognition_observe(%{session_id: _sid, text: text, sender_id: sender_id} = ctx) do
+    owner_id = sender_id || Traitee.Config.get([:security, :owner_id])
+
+    if owner_id do
+      Traitee.Cognition.UserModel.observe(owner_id, text)
+    end
+
+    {:ok, ctx}
+  rescue
+    _ -> {:ok, ctx}
+  end
+
+  defp cognition_observe(ctx), do: {:ok, ctx}
 end

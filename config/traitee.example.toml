@@ -151,3 +151,17 @@ enabled = true             # Log all filesystem access decisions for posture mon
 [gateway]
 port = 4000
 host = "127.0.0.1"
+
+# ──────────────────────────────────────────────
+# Cognition — Autonomous cognitive architecture
+# ──────────────────────────────────────────────
+
+[cognition]
+enabled = true                    # Master switch for all cognitive processes
+autonomy_level = "build"          # "observe_only" | "suggest" | "build"
+dream_interval_minutes = 120       # How often dream cycles run when idle
+dream_token_budget = 50000         # Max tokens per dream cycle
+workshop_token_budget = 100000     # Max tokens per workshop project build
+research_depth = "medium"          # "shallow" | "medium" | "deep"
+proactive_messaging = true         # Send findings via channel when ready
+proactive_channel = "telegram"     # Channel for proactive messages

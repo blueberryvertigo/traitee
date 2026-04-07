@@ -36,6 +36,7 @@ defmodule Traitee.Application do
       {DynamicSupervisor, name: Traitee.Tools.Supervisor, strategy: :one_for_one},
       Traitee.Browser.Supervisor,
       Traitee.Process.Lanes,
+      Traitee.Cognition.Supervisor,
       TraiteeWeb.Endpoint
     ]
 

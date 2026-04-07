@@ -11,7 +11,8 @@ defmodule Traitee.CLI.Display do
     {"memory", ~w(memory sessions)},
     {"comms", ~w(channel_send)},
     {"schedule", ~w(cron)},
-    {"agent", ~w(skill_manage workspace_edit delegate_task)}
+    {"agent", ~w(skill_manage workspace_edit delegate_task task_tracker)},
+    {"cognition", ~w(cognition)}
   ]
 
   # -- Banners --
@@ -31,6 +32,8 @@ defmodule Traitee.CLI.Display do
       "",
       skills_section(skills),
       counts_line(tools, skills),
+      "",
+      cognition_section(),
       "",
       session_section(session_id, model),
       warnings(config),
@@ -147,6 +150,12 @@ defmodule Traitee.CLI.Display do
     do: "#{a} #{id}"
 
   defp summarize_tool("task_tracker", %{"action" => a}), do: a
+
+  defp summarize_tool("cognition", %{"action" => "enqueue_curiosity", "topic" => t})
+       when is_binary(t),
+       do: "research #{trunc_text(t)}"
+
+  defp summarize_tool("cognition", %{"action" => a}), do: a
 
   defp summarize_tool(_name, _args), do: nil
 
@@ -285,6 +294,37 @@ defmodule Traitee.CLI.Display do
     tc = length(tools)
     sc = length(skills)
     ["", c(ANSI.faint(), "  #{tc} tools · #{sc} skills · /help for commands")]
+  end
+
+  defp cognition_section do
+    enabled = Traitee.Config.get([:cognition, :enabled]) != false
+
+    if enabled do
+      autonomy = Traitee.Config.get([:cognition, :autonomy_level]) || "build"
+      dream_interval = Traitee.Config.get([:cognition, :dream_interval_minutes]) || 120
+
+      modules =
+        ["dream", "workshop", "qc", "metacognition", "user_model"]
+        |> Enum.map_join(", ", &c(ANSI.magenta(), &1))
+
+      [
+        section_header("Cognition"),
+        "    #{c(ANSI.bright(), "Modules")}:   #{modules}",
+        "    #{c(ANSI.bright(), "Autonomy")}:  #{autonomy}",
+        "    #{c(ANSI.bright(), "Dream")}:     every #{dream_interval}m when idle"
+      ]
+    else
+      [
+        section_header("Cognition"),
+        "    #{c(ANSI.faint(), "(disabled)")}"
+      ]
+    end
+  rescue
+    _ ->
+      [
+        section_header("Cognition"),
+        "    #{c(ANSI.faint(), "(not loaded)")}"
+      ]
   end
 
   # -- Private: Formatting Helpers --

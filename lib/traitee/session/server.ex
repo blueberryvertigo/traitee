@@ -19,6 +19,7 @@ defmodule Traitee.Session.Server do
   alias Traitee.LLM.Router, as: LLMRouter
   alias Traitee.Memory.Compactor
   alias Traitee.Memory.STM
+  alias Traitee.Session.Lifecycle
 
   alias Traitee.Security.{
     Audit,
@@ -44,6 +45,7 @@ defmodule Traitee.Session.Server do
     :message_count,
     :last_budget,
     :compaction_state,
+    :lifecycle,
     channels: %{},
     delegations_expected: 0,
     delegation_results: []
@@ -112,6 +114,11 @@ defmodule Traitee.Session.Server do
     GenServer.call(pid, :pop_delegation_results)
   end
 
+  @doc "Update a session's per-session config (model, thinking, verbose, group_activation)."
+  def configure(pid, key, value) do
+    GenServer.call(pid, {:configure, key, value})
+  end
+
   # -- Server --
 
   @impl true
@@ -128,10 +135,12 @@ defmodule Traitee.Session.Server do
       channel: channel,
       stm_state: stm_state,
       created_at: DateTime.utc_now(),
-      message_count: STM.count(stm_state)
+      message_count: STM.count(stm_state),
+      lifecycle: Lifecycle.new(session_id, channel)
     }
 
     Logger.debug("Session started: #{session_id} (#{channel})")
+    check_workshop_presentations(state)
     {:ok, state}
   end
 
@@ -148,7 +157,8 @@ defmodule Traitee.Session.Server do
 
   @impl true
   def handle_call(:get_state, _from, state) do
-    model = Traitee.Config.get([:agent, :model]) || "openai/gpt-4o"
+    default_model = Traitee.Config.get([:agent, :model]) || "openai/gpt-4o"
+    lc = state.lifecycle
 
     summary = %{
       session_id: state.session_id,
@@ -159,12 +169,28 @@ defmodule Traitee.Session.Server do
       stm_tokens: STM.total_tokens(state.stm_state),
       created_at: state.created_at,
       channels: state.channels,
-      model: model,
+      model: lc.model_override || default_model,
+      thinking_level: lc.thinking_level,
+      verbose_level: lc.verbose_level,
       last_budget: state.last_budget,
       compaction_state: state.compaction_state || :idle
     }
 
     {:reply, summary, state}
+  end
+
+  @impl true
+  def handle_call({:configure, key, value}, _from, state) do
+    lc =
+      case key do
+        :model -> Lifecycle.set_model(state.lifecycle, value)
+        :thinking -> Lifecycle.set_thinking_level(state.lifecycle, value)
+        :verbose -> Lifecycle.set_verbose(state.lifecycle, value)
+        :group_activation -> Lifecycle.set_group_activation(state.lifecycle, value)
+        _ -> state.lifecycle
+      end
+
+    {:reply, :ok, %{state | lifecycle: lc}}
   end
 
   @impl true
@@ -231,6 +257,13 @@ defmodule Traitee.Session.Server do
     end
 
     STM.destroy(state.stm_state)
+
+    Phoenix.PubSub.broadcast(
+      Traitee.PubSub,
+      "session:events",
+      {:session_ended, state.session_id}
+    )
+
     :ok
   end
 
@@ -238,6 +271,12 @@ defmodule Traitee.Session.Server do
 
   defp process_message(text, channel, opts, state, notify) do
     state = track_channel(state, channel, opts)
+
+    state =
+      case Lifecycle.transition(state.lifecycle, :message_received) do
+        {:ok, lc} -> %{state | lifecycle: lc}
+        _ -> state
+      end
 
     %{sanitized: sanitized_text, threats: regex_threats} = Sanitizer.sanitize(text)
 
@@ -329,7 +368,9 @@ defmodule Traitee.Session.Server do
 
       notify_progress(notify, %{type: :round, depth: depth})
 
-      request = %{messages: messages}
+      request =
+        %{messages: messages}
+        |> maybe_apply_model_override(state.lifecycle)
 
       llm_started = System.monotonic_time(:millisecond)
 
@@ -560,6 +601,37 @@ defmodule Traitee.Session.Server do
       fill >= 0.75 -> :near
       true -> :idle
     end
+  end
+
+  defp check_workshop_presentations(state) do
+    Task.start(fn ->
+      owner_id = Traitee.Config.get([:security, :owner_id])
+
+      if owner_id do
+        presentations = Traitee.Cognition.Workshop.pending_presentations(owner_id)
+
+        Enum.each(presentations, fn project ->
+          Traitee.Cognition.Workshop.mark_presented(project.id)
+
+          STM.push(
+            state.stm_state,
+            "system",
+            "[Workshop] While you were away, I built '#{project.name}': #{project.description}. " <>
+              "Type: #{project.project_type}. Artifacts: #{inspect(project.artifacts)}. " <>
+              "Mention this to the user when appropriate.",
+            channel: :internal
+          )
+        end)
+      end
+    end)
+  rescue
+    _ -> :ok
+  end
+
+  defp maybe_apply_model_override(request, %Lifecycle{model_override: nil}), do: request
+
+  defp maybe_apply_model_override(request, %Lifecycle{model_override: model}) do
+    Map.put(request, :model_override, model)
   end
 
   defp parse_args(args) when is_binary(args) do

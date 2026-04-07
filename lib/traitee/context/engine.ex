@@ -116,6 +116,7 @@ defmodule Traitee.Context.Engine do
       end
       |> String.trim()
       |> append_channel_awareness()
+      |> append_cognition_awareness(opts[:session_id])
 
     session_id = opts[:session_id]
 
@@ -143,6 +144,61 @@ defmodule Traitee.Context.Engine do
     else
       base
     end
+  end
+
+  defp append_cognition_awareness(base, _session_id) do
+    if Traitee.Config.get([:cognition, :enabled]) != false do
+      owner_id = Traitee.Config.get([:security, :owner_id])
+      profile_summary = if owner_id, do: cognition_profile(owner_id), else: nil
+      workshop_summary = if owner_id, do: cognition_workshop(owner_id), else: nil
+
+      section = """
+      [Cognitive Architecture]
+      You have autonomous background processes running between conversations:
+      - Dream State: researches topics you're curious about, consolidates memory, generates project ideas
+      - Workshop: autonomously builds tools, skills, and code projects tailored to the user's interests
+      - User Model: continuously tracks the user's interests, expertise, desires, and communication style
+      - Metacognition: monitors your own performance and triggers self-improvement
+
+      When you encounter a topic you don't know enough about, the Dream State will research it in the background.
+      When you notice the user could benefit from a tool or workflow, suggest it -- the Workshop may have already built it.
+      If the Workshop has built something, present it naturally when relevant. Don't force it.
+      You can also proactively mention insights from your background research when they're relevant to the conversation.
+      """
+
+      section =
+        if profile_summary && profile_summary != "" do
+          section <> "\n[User Profile]\n" <> profile_summary
+        else
+          section
+        end
+
+      section =
+        if workshop_summary && workshop_summary != "" do
+          section <> "\n\n[Recent Workshop Projects]\n" <> workshop_summary
+        else
+          section
+        end
+
+      base <> "\n\n" <> String.trim(section)
+    else
+      base
+    end
+  rescue
+    _ -> base
+  end
+
+  defp cognition_profile(owner_id) do
+    Traitee.Cognition.UserModel.profile_summary(owner_id)
+  rescue
+    _ -> nil
+  end
+
+  defp cognition_workshop(owner_id) do
+    Traitee.Cognition.Workshop.pending_presentations(owner_id)
+    |> Enum.map_join("\n", fn p -> "- #{p.name} (#{p.project_type}): #{p.description}" end)
+  rescue
+    _ -> nil
   end
 
   # -- Skills (Tier 1 metadata) --

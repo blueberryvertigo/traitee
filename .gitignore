@@ -55,3 +55,20 @@ npm-debug.log*
 # ~/.traitee/ is the runtime data dir — never committed
 approved_senders.json
 config.toml
+dynamic_tools.json
+credentials/
+
+# Workshop artifacts (built by cognition system)
+workshop/
+
+# User-specific TOML config
+traitee.toml
+*.toml
+!config/traitee.example.toml
+
+# Secrets / credentials that might leak into project root
+*.pem
+*.key
+*.p12
+*_secret*
+*_credentials*

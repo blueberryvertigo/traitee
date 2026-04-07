@@ -5,7 +5,7 @@ defmodule Traitee.Router do
   and dispatches them to the appropriate session GenServer.
   """
 
-  alias Traitee.AutoReply.CommandRegistry
+  alias Traitee.AutoReply.{CommandRegistry, Pipeline}
   alias Traitee.Channels.Typing
   alias Traitee.Routing.AgentRouter
   alias Traitee.Security.Allowlist
@@ -76,7 +76,18 @@ defmodule Traitee.Router do
     end
   end
 
-  defp check_auto_reply(_inbound), do: :pass
+  defp check_auto_reply(inbound) do
+    case Pipeline.process(inbound, %{}) do
+      {:reply, _context} -> :pass
+      {:command, response} -> {:auto_reply, response}
+      {:skill, _content} -> :pass
+      :debounced -> {:blocked, :debounced}
+      :ignored -> {:blocked, :ignored_in_group}
+      _ -> :pass
+    end
+  rescue
+    _ -> :pass
+  end
 
   defp route_to_agent(inbound) do
     route = AgentRouter.resolve(inbound)
