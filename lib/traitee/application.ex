@@ -34,6 +34,12 @@ defmodule Traitee.Application do
       {DynamicSupervisor, name: Traitee.Session.Supervisor, strategy: :one_for_one},
       Traitee.Channels.Supervisor,
       {DynamicSupervisor, name: Traitee.Tools.Supervisor, strategy: :one_for_one},
+      # Supervisor for delegation background work. Previously delegation
+      # used bare Task.start — unlinked, unsupervised — so subagent work
+      # leaked past session crashes and continued billing API calls and
+      # running tools with no owner to deliver results to.
+      {Task.Supervisor, name: Traitee.Delegation.TaskSupervisor},
+      Traitee.Delegation.ProgressReaper,
       Traitee.Browser.Supervisor,
       Traitee.Process.Lanes,
       Traitee.Cognition.Supervisor,

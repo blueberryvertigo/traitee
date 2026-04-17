@@ -6,9 +6,15 @@ defmodule Traitee.Delegation.Progress do
   status) to an ETS table keyed by `{session_id, tag}`. The parent
   session can read this at any time via `get_all/1` or `format_status/1`
   without blocking the subagent.
+
+  Entries are reaped by the `Traitee.Delegation.ProgressReaper` GenServer
+  every few minutes — crashed/abandoned subagent entries don't survive
+  forever in ETS the way they did before.
   """
 
   @table :traitee_delegation_progress
+  # Entries idle for longer than this are considered stale and reaped.
+  @stale_after_ms 15 * 60 * 1_000
 
   def init do
     if :ets.whereis(@table) == :undefined do
@@ -19,6 +25,25 @@ defmodule Traitee.Delegation.Progress do
         read_concurrency: true,
         write_concurrency: true
       ])
+    end
+
+    :ok
+  end
+
+  @doc "Prune entries whose last_activity_at is older than `@stale_after_ms`."
+  def reap_stale do
+    if :ets.whereis(@table) != :undefined do
+      now = System.monotonic_time(:millisecond)
+      cutoff = now - @stale_after_ms
+
+      :ets.tab2list(@table)
+      |> Enum.each(fn
+        {key, %{last_activity_at: ts}} when ts < cutoff ->
+          :ets.delete(@table, key)
+
+        _ ->
+          :ok
+      end)
     end
 
     :ok

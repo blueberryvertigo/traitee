@@ -23,13 +23,15 @@ defmodule Traitee.Session.Server do
 
   alias Traitee.Security.{
     Audit,
+    Canary,
     Cognitive,
     IOGuard,
     Judge,
     OutputGuard,
     Sanitizer,
     SystemAuth,
-    ThreatTracker
+    ThreatTracker,
+    ToolOutputGuard
   }
 
   alias Traitee.Tools.Registry, as: ToolRegistry
@@ -48,7 +50,10 @@ defmodule Traitee.Session.Server do
     :lifecycle,
     channels: %{},
     delegations_expected: 0,
-    delegation_results: []
+    delegation_results: [],
+    # Per-turn transient: hop depth for inbound inter-session messages.
+    # Cleared at the end of each `process_message`.
+    inter_session_depth: 0
   ]
 
   def start_link(opts) do
@@ -237,10 +242,24 @@ defmodule Traitee.Session.Server do
       "[#{state.session_id}] Async subagent results received (#{byte_size(result)} bytes)"
     )
 
-    stm_state =
-      STM.push(state.stm_state, "system", "[Subagent results]\n#{result}", channel: :internal)
+    # Subagent results reach us over an unauthenticated process mailbox and
+    # can carry attacker-influenced content. Neutralize conversation tokens
+    # and [SYS:] markers before the content enters STM. Context.Engine will
+    # additionally rewrap any role=system STM entries as untrusted user data
+    # (mark_stm_origins/1), so this is defense-in-depth.
+    %{output: safe_result} =
+      ToolOutputGuard.scan(result,
+        session_id: state.session_id,
+        tool: "delegate_task",
+        source: :subagent
+      )
 
-    results = state.delegation_results ++ [result]
+    stm_state =
+      STM.push(state.stm_state, "system", "[Subagent results]\n#{safe_result}",
+        channel: :internal
+      )
+
+    results = state.delegation_results ++ [safe_result]
     {:noreply, %{state | stm_state: stm_state, delegation_results: results}}
   end
 
@@ -258,6 +277,14 @@ defmodule Traitee.Session.Server do
 
     STM.destroy(state.stm_state)
 
+    # Drop per-session state accumulated in ETS: auth nonce, canary,
+    # threat tracker events, tracked tasks. Previously these entries
+    # accumulated forever (and were re-used across session_id recycling).
+    safe_clear(fn -> SystemAuth.clear(state.session_id) end)
+    safe_clear(fn -> Canary.clear(state.session_id) end)
+    safe_clear(fn -> ThreatTracker.clear(state.session_id) end)
+    safe_clear(fn -> TaskTracker.clear(state.session_id) end)
+
     Phoenix.PubSub.broadcast(
       Traitee.PubSub,
       "session:events",
@@ -267,10 +294,26 @@ defmodule Traitee.Session.Server do
     :ok
   end
 
+  defp safe_clear(fun) do
+    fun.()
+  rescue
+    _ -> :ok
+  end
+
   # -- Private --
+
+  # Tools considered too powerful to expose when threat level is :high.
+  # Writing to workspace/skills, sending cross-channel messages, spawning
+  # subagents, scheduling cron, and pivoting to other sessions would all
+  # amplify an ongoing attack.
+  @high_risk_tools ~w(workspace_edit skill_manage channel_send delegate_task cron sessions memory)
 
   defp process_message(text, channel, opts, state, notify) do
     state = track_channel(state, channel, opts)
+
+    # Inter-session depth is carried on the call opts by InterSession.send.
+    # Default 0 so a normal inbound user message resets the chain.
+    state = %{state | inter_session_depth: opts[:inter_session_depth] || 0}
 
     state =
       case Lifecycle.transition(state.lifecycle, :message_received) do
@@ -278,12 +321,28 @@ defmodule Traitee.Session.Server do
         _ -> state
       end
 
-    %{sanitized: sanitized_text, threats: regex_threats} = Sanitizer.sanitize(text)
+    # Rotate the system-auth nonce per turn so a leaked nonce is useful for
+    # at most the turn it leaked in. Previously the nonce was sticky for the
+    # whole session.
+    SystemAuth.rotate(state.session_id)
+
+    # Defense-in-depth: strip any user-supplied [SYS:…] markers BEFORE the
+    # sanitizer so an attacker cannot smuggle a forged authenticated prefix
+    # into STM or the LLM's context. Zero-width characters are also
+    # pre-stripped by the sanitizer now, but do it here too for clarity.
+    cleaned_text =
+      text
+      |> SystemAuth.strip_markers()
+      |> Sanitizer.strip_zero_width()
+
+    %{sanitized: sanitized_text, threats: regex_threats} = Sanitizer.sanitize(cleaned_text)
 
     judge_threats =
       if Judge.enabled?() do
-        {:ok, verdict} = Judge.evaluate(text)
-        Judge.to_threats(verdict)
+        case safe_judge_evaluate(cleaned_text) do
+          {:ok, verdict} -> Judge.to_threats(verdict)
+          _ -> []
+        end
       else
         []
       end
@@ -299,47 +358,136 @@ defmodule Traitee.Session.Server do
       )
     end
 
-    tools = ToolRegistry.tool_schemas()
+    threat_level = safe_threat_level(state.session_id)
 
-    {messages, budget} =
-      Engine.assemble(
-        state.session_id,
-        state.stm_state,
-        sanitized_text,
-        tools: if(tools != [], do: tools, else: nil),
-        message_count: state.message_count,
-        has_recent_threats: has_recent_threats,
-        channel: channel
-      )
-
-    state = %{state | last_budget: budget}
-
-    stm_state = STM.push(state.stm_state, "user", sanitized_text, channel: channel)
-    state = %{state | stm_state: stm_state, message_count: state.message_count + 1}
-
-    case run_completion_loop(messages, tools, state, notify) do
-      {:ok, response_text} ->
-        response_text = apply_output_guard(state.session_id, response_text)
-
-        stm_state = STM.push(state.stm_state, "assistant", response_text, channel: channel)
-        state = %{state | stm_state: stm_state, message_count: state.message_count + 1}
-
-        stm_state = maybe_push_delegation_anchor(stm_state, response_text)
-        state = %{state | stm_state: stm_state}
-
-        compaction_state = detect_compaction_state(stm_state)
-        state = %{state | compaction_state: compaction_state}
-
-        Continuity.persist_session(state.session_id, %{
-          message_count: state.message_count
+    case gate_on_threat_level(threat_level, state) do
+      {:refuse, refusal} ->
+        Audit.record(:session_gate, %{
+          session_id: state.session_id,
+          decision: :deny,
+          reason: "threat_level=#{threat_level}",
+          tool: :pipeline
         })
 
-        {{:ok, response_text}, state}
+        stm_state = STM.push(state.stm_state, "user", sanitized_text, channel: channel)
 
-      {:error, reason} ->
-        {{:error, reason}, state}
+        stm_state =
+          STM.push(stm_state, "assistant", refusal,
+            channel: channel,
+            meta: %{gated: true, threat_level: threat_level}
+          )
+
+        state = %{state | stm_state: stm_state, message_count: state.message_count + 2}
+        {{:ok, refusal}, state}
+
+      {:allow, tool_policy} ->
+        tools = tool_policy.(ToolRegistry.tool_schemas())
+        max_depth = depth_for_threat_level(threat_level)
+
+        {messages, budget} =
+          Engine.assemble(
+            state.session_id,
+            state.stm_state,
+            sanitized_text,
+            tools: if(tools != [], do: tools, else: nil),
+            message_count: state.message_count,
+            has_recent_threats: has_recent_threats,
+            channel: channel
+          )
+
+        state = %{state | last_budget: budget}
+
+        stm_state = STM.push(state.stm_state, "user", sanitized_text, channel: channel)
+        state = %{state | stm_state: stm_state, message_count: state.message_count + 1}
+
+        case run_completion_loop(messages, tools, 0, state, notify, max_depth) do
+          {:ok, response_text} ->
+            response_text = apply_output_guard(state.session_id, response_text)
+
+            stm_state = STM.push(state.stm_state, "assistant", response_text, channel: channel)
+            state = %{state | stm_state: stm_state, message_count: state.message_count + 1}
+
+            stm_state = maybe_push_delegation_anchor(stm_state, response_text)
+            state = %{state | stm_state: stm_state}
+
+            compaction_state = detect_compaction_state(stm_state)
+            state = %{state | compaction_state: compaction_state}
+
+            # Off-load the persistence write — it does a Repo.one + Repo.update
+            # round-trip and was previously inside the hot path. The caller
+            # doesn't need to wait for the DB ack.
+            session_id = state.session_id
+            msg_count = state.message_count
+
+            Task.start(fn ->
+              try do
+                Continuity.persist_session(session_id, %{message_count: msg_count})
+              rescue
+                e -> Logger.debug("[#{session_id}] persist_session failed: #{inspect(e)}")
+              end
+            end)
+
+            {{:ok, response_text}, state}
+
+          {:error, reason} ->
+            {{:error, reason}, state}
+        end
     end
   end
+
+  # Judge contract can change; wrap the call so a future non-`{:ok, _}` return
+  # doesn't crash the session with a MatchError.
+  defp safe_judge_evaluate(text) do
+    result = Judge.evaluate(text)
+
+    case result do
+      {:ok, verdict} -> {:ok, verdict}
+      other -> {:error, {:unexpected, other}}
+    end
+  rescue
+    e -> {:error, e}
+  end
+
+  defp safe_threat_level(session_id) do
+    ThreatTracker.threat_level(session_id)
+  rescue
+    _ -> :normal
+  end
+
+  # Gate the pipeline on the current threat level:
+  #   :critical → refuse the turn outright with a safety message
+  #   :high     → remove high-risk tools for this turn
+  #   :elevated → keep all tools but reduce max tool-loop depth
+  #   :normal   → proceed normally
+  defp gate_on_threat_level(:critical, state) do
+    Logger.error("[#{state.session_id}] Pipeline refusing message: threat_level=:critical")
+
+    refusal =
+      "I'm not able to respond to this — recent messages have triggered critical-severity " <>
+        "security indicators. Please rephrase without injection-style prompts, role-override, " <>
+        "or system-instruction claims."
+
+    {:refuse, refusal}
+  end
+
+  defp gate_on_threat_level(:high, _state) do
+    policy = fn tool_schemas ->
+      Enum.reject(tool_schemas, fn schema ->
+        name = get_in(schema, ["function", "name"])
+        name in @high_risk_tools
+      end)
+    end
+
+    {:allow, policy}
+  end
+
+  defp gate_on_threat_level(_other, _state) do
+    {:allow, fn tool_schemas -> tool_schemas end}
+  end
+
+  defp depth_for_threat_level(:elevated), do: 10
+  defp depth_for_threat_level(:high), do: 10
+  defp depth_for_threat_level(_), do: 50
 
   defp apply_output_guard(session_id, text) do
     if Cognitive.enabled?() do
@@ -353,17 +501,13 @@ defmodule Traitee.Session.Server do
     end
   end
 
-  defp run_completion_loop(messages, tools, %__MODULE__{} = state, notify) do
-    run_completion_loop(messages, tools, 0, state, notify)
-  end
-
-  defp run_completion_loop(messages, tools, depth, state, notify) do
-    if depth > 50 do
+  defp run_completion_loop(messages, tools, depth, state, notify, max_depth) do
+    if depth > max_depth do
       {:ok,
        "I got carried away with tools there. Could you rephrase your question? I'll try to answer directly."}
     else
       if depth > 1 do
-        IO.puts("#{ANSI.faint()}#{ANSI.blue()}  ⟳ Round #{depth}/50#{ANSI.reset()}")
+        IO.puts("#{ANSI.faint()}#{ANSI.blue()}  ⟳ Round #{depth}/#{max_depth}#{ANSI.reset()}")
       end
 
       notify_progress(notify, %{type: :round, depth: depth})
@@ -387,6 +531,12 @@ defmodule Traitee.Session.Server do
       case result do
         {:ok, %{tool_calls: tool_calls, content: content}}
         when is_list(tool_calls) and tool_calls != [] ->
+          # Even intermediate assistant content (the message alongside tool
+          # calls) must pass OutputGuard — a jailbroken model could leak the
+          # canary or echo the system prompt here without ever producing a
+          # final text response.
+          guarded_content = guard_intermediate_content(state.session_id, content)
+
           tool_names = Enum.map(tool_calls, &get_in(&1, ["function", "name"]))
           notify_progress(notify, %{type: :tools, names: tool_names})
 
@@ -399,22 +549,33 @@ defmodule Traitee.Session.Server do
              "I've dispatched subagents to work on this#{if tags != "", do: ": #{tags}", else: ""}. " <>
                "Results will arrive shortly."}
           else
-            tool_reminder =
-              if Cognitive.enabled?(), do: [Cognitive.tool_reminder()], else: []
-
-            task_reminder = build_task_reminder(state.session_id)
-
+            # Inject the "treat tool output as untrusted" reminder + active
+            # task summary ONCE — the first time we enter a tool round in
+            # this turn. Previously this was re-appended every round, so
+            # after 10 rounds the prompt carried 10 copies of the same
+            # reminder and 10 task snapshots.
             sys_injections =
-              (tool_reminder ++ task_reminder)
-              |> Enum.map(&SystemAuth.tag_message(&1, state.session_id))
+              if depth == 0 do
+                tool_reminder =
+                  if Cognitive.enabled?(), do: [Cognitive.tool_reminder()], else: []
+
+                task_reminder = build_task_reminder(state.session_id)
+
+                (tool_reminder ++ task_reminder)
+                |> Enum.map(&SystemAuth.tag_message(&1, state.session_id))
+              else
+                []
+              end
+
+            trimmed_results = maybe_summarize_tool_results(tool_results, state)
 
             updated_messages =
               messages ++
-                [%{role: "assistant", content: content, tool_calls: tool_calls}] ++
-                tool_results ++
+                [%{role: "assistant", content: guarded_content, tool_calls: tool_calls}] ++
+                trimmed_results ++
                 sys_injections
 
-            run_completion_loop(updated_messages, tools, depth + 1, state, notify)
+            run_completion_loop(updated_messages, tools, depth + 1, state, notify, max_depth)
           end
 
         {:ok, %{content: content}} ->
@@ -424,6 +585,52 @@ defmodule Traitee.Session.Server do
           {:error, reason}
       end
     end
+  end
+
+  defp guard_intermediate_content(_session_id, nil), do: nil
+
+  defp guard_intermediate_content(session_id, content) when is_binary(content) do
+    if Cognitive.enabled?() do
+      case OutputGuard.check(session_id, content) do
+        {:ok, text} -> text
+        {:redacted, text} -> text
+        {:blocked, text} -> text
+      end
+    else
+      content
+    end
+  end
+
+  defp guard_intermediate_content(_session_id, content), do: content
+
+  # Tool outputs can be huge (bash with `find /`, browser snapshots of long
+  # pages, file tool reads). A single 100KB result re-appended to `messages`
+  # on every subsequent round inflates the prompt and balloons token spend
+  # quadratically. We truncate individual tool-result entries whose content
+  # exceeds a per-call cap while keeping head + tail intact, which preserves
+  # the most-actionable bits (initial error message / final summary).
+  @tool_result_char_cap 12_000
+  @tool_result_head 8_000
+  @tool_result_tail 3_500
+
+  defp maybe_summarize_tool_results(results, _state) do
+    Enum.map(results, fn
+      %{content: content} = msg
+      when is_binary(content) and byte_size(content) > @tool_result_char_cap ->
+        truncated =
+          String.slice(content, 0, @tool_result_head) <>
+            "\n... [#{byte_size(content) - @tool_result_head - @tool_result_tail} bytes omitted — tool output was too large to include in full] ...\n" <>
+            String.slice(
+              content,
+              max(byte_size(content) - @tool_result_tail, 0),
+              @tool_result_tail
+            )
+
+        %{msg | content: truncated}
+
+      msg ->
+        msg
+    end)
   end
 
   defp notify_progress(nil, _info), do: :ok
@@ -436,41 +643,97 @@ defmodule Traitee.Session.Server do
     end
   end
 
+  # Execute a batch of tool_calls from a single LLM round.
+  #
+  # Tool calls in the same round are typically independent (the LLM emits 3-5
+  # parallel reads for research, filesystem inspection, etc.) so running them
+  # sequentially was a major latency tax — the round took as long as the sum
+  # of all calls instead of the slowest one.
+  #
+  # We use `Task.async_stream` with `ordered: true` so results are paired
+  # back to the original tool_call ordering, which is what the LLM's
+  # tool_call_id → tool message mapping requires.
+  @tool_parallelism 5
+  @tool_timeout_ms 300_000
+
   defp execute_tools(tool_calls, state) do
-    Enum.map(tool_calls, fn call ->
-      func = call["function"] || %{}
-      name = func["name"]
-      args = parse_args(func["arguments"])
+    # Compute session/ownership context ONCE per round — it's identical for
+    # every tool in the same round.
+    {sender_id, channel_type} = most_recent_sender(state.channels)
 
-      label = Display.tool_summary(name, args)
-      IO.puts("#{ANSI.faint()}#{ANSI.blue()}  ⚙ #{label}#{ANSI.reset()}")
+    is_owner =
+      if sender_id && channel_type do
+        Traitee.Config.sender_is_owner?(sender_id, channel_type)
+      else
+        false
+      end
 
-      args_with_context =
-        args
-        |> Map.put("_session_id", state.session_id)
-        |> then(fn a ->
-          if name == "channel_send", do: Map.put(a, "_session_channels", state.channels), else: a
-        end)
+    # Inter-session hop depth — tracked so `sessions.send` can't spawn an
+    # unbounded ping-pong between sessions.
+    context_base = %{
+      "_session_id" => state.session_id,
+      "_session_sender_id" => sender_id,
+      "_session_channel_type" => channel_type,
+      "_session_is_owner" => is_owner,
+      "_inter_session_depth" => state.inter_session_depth || 0
+    }
 
-      started = System.monotonic_time(:millisecond)
-      result = guarded_execute(name, args_with_context, state.session_id)
-      duration = System.monotonic_time(:millisecond) - started
+    tool_calls
+    |> Task.async_stream(
+      fn call -> run_one_tool(call, state, context_base) end,
+      max_concurrency: @tool_parallelism,
+      ordered: true,
+      timeout: @tool_timeout_ms,
+      on_timeout: :kill_task
+    )
+    |> Enum.zip(tool_calls)
+    |> Enum.map(fn
+      {{:ok, result_msg}, _call} ->
+        result_msg
 
-      status = if String.starts_with?(result, "Error:"), do: :error, else: :ok
-
-      ActivityLog.record(state.session_id, :tool_call, %{
-        name: name,
-        status: status,
-        duration_ms: duration
-      })
-
-      %{
-        role: "tool",
-        tool_call_id: call["id"],
-        name: name,
-        content: result
-      }
+      {{:exit, reason}, call} ->
+        %{
+          role: "tool",
+          tool_call_id: call["id"],
+          name: (call["function"] || %{})["name"],
+          content: "Error: tool execution failed — #{inspect(reason)}"
+        }
     end)
+  end
+
+  defp run_one_tool(call, state, context_base) do
+    func = call["function"] || %{}
+    name = func["name"]
+    args = parse_args(func["arguments"])
+
+    label = Display.tool_summary(name, args)
+    IO.puts("#{ANSI.faint()}#{ANSI.blue()}  ⚙ #{label}#{ANSI.reset()}")
+
+    args_with_context =
+      args
+      |> Map.merge(context_base)
+      |> then(fn a ->
+        if name == "channel_send", do: Map.put(a, "_session_channels", state.channels), else: a
+      end)
+
+    started = System.monotonic_time(:millisecond)
+    result = guarded_execute(name, args_with_context, state.session_id)
+    duration = System.monotonic_time(:millisecond) - started
+
+    status = if String.starts_with?(result, "Error:"), do: :error, else: :ok
+
+    ActivityLog.record(state.session_id, :tool_call, %{
+      name: name,
+      status: status,
+      duration_ms: duration
+    })
+
+    %{
+      role: "tool",
+      tool_call_id: call["id"],
+      name: name,
+      content: result
+    }
   end
 
   defp guarded_execute(name, args, session_id) do
@@ -490,10 +753,20 @@ defmodule Traitee.Session.Server do
   defp apply_output_guard_to_tool({:ok, output}, name, session_id) do
     track_tool_output(name, output, session_id)
 
-    case IOGuard.check_output(name, output) do
-      {:clean, clean_output} -> clean_output
-      {:redacted, redacted, _types} -> redacted
-    end
+    scrubbed =
+      case IOGuard.check_output(name, output) do
+        {:clean, clean_output} -> clean_output
+        {:redacted, redacted, _types} -> redacted
+      end
+
+    # Tool output is the #1 prompt-injection vector. In addition to secret
+    # scrubbing by IOGuard, run the ToolOutputGuard which neutralizes
+    # conversation tokens, strips Traitee's own [SYS:…] marker, and charges
+    # any injection-pattern hits to the session's ThreatTracker.
+    %{output: safe} =
+      ToolOutputGuard.scan(scrubbed, session_id: session_id, tool: name, source: :tool)
+
+    safe
   end
 
   defp apply_output_guard_to_tool({:error, reason}, name, session_id) do
@@ -532,6 +805,23 @@ defmodule Traitee.Session.Server do
     byte_size(output) > 500 or
       Regex.match?(~r{(^|\n)(/|[A-Z]:\\)}, output)
   end
+
+  # Returns {sender_id, channel_type} for the most recently-seen channel
+  # on this session, or {nil, nil} if the session has never received an
+  # identified message (e.g. it was spawned by a subagent or cron job).
+  defp most_recent_sender(channels) when is_map(channels) and map_size(channels) > 0 do
+    channels
+    |> Enum.sort_by(fn {_ch, info} -> info[:last_seen] end, {:desc, DateTime})
+    |> Enum.find_value({nil, nil}, fn {ch, info} ->
+      case info[:sender_id] do
+        nil -> nil
+        "" -> nil
+        sid -> {to_string(sid), ch}
+      end
+    end)
+  end
+
+  defp most_recent_sender(_), do: {nil, nil}
 
   defp track_channel(state, channel, opts) do
     reply_to = opts[:reply_to]

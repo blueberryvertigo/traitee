@@ -1,5 +1,15 @@
 defmodule Traitee.Hooks.Builtin do
-  @moduledoc "Built-in hooks for logging, metrics, safety, and cognitive security."
+  @moduledoc """
+  Built-in hooks for logging, metrics, safety, and cognitive security.
+
+  NOTE: Most security-critical hook points here (`:before_message` rate
+  limiting, `:after_message` OutputGuard, `:on_session_end` cleanup) are
+  historical — the production pipeline now calls those primitives
+  directly from `Traitee.Router` and `Traitee.Session.Server` so they
+  run even if `Hooks.Engine.fire/2` is never invoked. The handlers are
+  kept here for consumers that do want to opt in to the hook engine,
+  and for backwards compatibility, but they do NOT run by default.
+  """
 
   require Logger
 

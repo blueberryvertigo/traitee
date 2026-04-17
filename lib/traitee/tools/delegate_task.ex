@@ -125,8 +125,21 @@ defmodule Traitee.Tools.DelegateTask do
 
       Traitee.Session.notify_delegation(session_id, 1)
 
-      Task.start(fn ->
-        {:ok, results} = Runner.run(parsed_tasks, opts)
+      # Supervised, unlinked background work. If the parent session crashes,
+      # the Task.Supervisor still owns the background task and can terminate
+      # it; if Runner.run itself crashes, we always deliver an error payload
+      # to the session so `delegations_expected` doesn't stick forever.
+      Task.Supervisor.start_child(Traitee.Delegation.TaskSupervisor, fn ->
+        results =
+          try do
+            {:ok, xml} = Runner.run(parsed_tasks, opts)
+            xml
+          rescue
+            e -> delegation_error_xml(parsed_tasks, Exception.message(e))
+          catch
+            :exit, reason -> delegation_error_xml(parsed_tasks, inspect(reason))
+          end
+
         Traitee.Session.inject_async_result(session_id, results)
       end)
 
@@ -146,4 +159,25 @@ defmodule Traitee.Tools.DelegateTask do
 
   defp maybe_put(opts, _key, nil), do: opts
   defp maybe_put(opts, key, value), do: Keyword.put(opts, key, value)
+
+  # Structured error payload so the parent LLM sees a parsable subagent
+  # failure rather than an unreadable tuple.
+  defp delegation_error_xml(tasks, reason) do
+    tags = tasks |> Enum.map(& &1.tag) |> Enum.join(", ")
+
+    """
+    <delegate_results count="#{length(tasks)}" completed="0" failed="#{length(tasks)}">
+    <error>Delegation crashed for [#{escape_xml(tags)}]: #{escape_xml(to_string(reason))}</error>
+    </delegate_results>
+    """
+  end
+
+  defp escape_xml(str) do
+    str
+    |> to_string()
+    |> String.replace("&", "&amp;")
+    |> String.replace("<", "&lt;")
+    |> String.replace(">", "&gt;")
+    |> String.replace("\"", "&quot;")
+  end
 end

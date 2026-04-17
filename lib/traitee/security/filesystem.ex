@@ -55,71 +55,136 @@ defmodule Traitee.Security.Filesystem do
     "**/passwd",
     "**/etc/shadow",
     "**/etc/passwd",
-    "C:/Windows/System32/**",
+    "C:/Windows/**",
+    "**/windows/system32/**",
+    "C:/ProgramData/Microsoft/**",
+    "**/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup/**",
+    "**/.config/systemd/**",
     "/proc/**",
+    "**/proc/**",
     "/sys/**",
-    "/dev/**"
+    "**/sys/**",
+    "/dev/**",
+    "**/dev/sd*",
+    "**/dev/nvme*",
+    "**/dev/hd*"
+  ]
+
+  # Paths inside the Traitee data directory that tools are NEVER allowed to
+  # write to (or read, for credentials). These protect the agent's own
+  # configuration, identity files, persisted tool registry, pairing state,
+  # database, and skill/workspace files that feed the system prompt.
+  # Paths are data-dir-relative, matched against the normalized tail.
+  @data_dir_protected_writes [
+    "config.toml",
+    "approved_senders.json",
+    "pending_pairings.json",
+    "dynamic_tools.json",
+    "traitee.db",
+    "traitee.db-journal",
+    "traitee.db-wal",
+    "traitee.db-shm",
+    "traitee_test.db",
+    "credentials/**",
+    "workspace/SOUL.md",
+    "workspace/AGENTS.md",
+    "workspace/TOOLS.md",
+    "workspace/BOOT.md",
+    "workspace/skills/**"
+  ]
+
+  @data_dir_protected_reads [
+    "credentials/**",
+    "config.toml"
   ]
 
   @hardcoded_deny_commands [
-    ~r/\bcurl\b.*\|\s*(ba)?sh\b/i,
-    ~r/\bwget\b.*\|\s*(ba)?sh\b/i,
-    ~r/\beval\b.*\$\(/,
+    # Pipe-to-shell: handle /bin/sh, /usr/bin/bash, zsh, ksh, dash, python, node, tee-then-run.
+    ~r/\b(?:curl|wget|fetch|iwr|Invoke-WebRequest)\b[^\n]*\|\s*(?:\S*\/)?(?:ba|z|k|da|a)?sh\b/i,
+    ~r/\b(?:curl|wget|fetch|iwr|Invoke-WebRequest)\b[^\n]*\|\s*(?:python|perl|ruby|node|php|tee)\b/i,
+    # Process substitution: bash <(curl …), sh <(…)
+    ~r/\b(?:ba|z|k|da|a)?sh\b\s+<\(\s*(?:curl|wget|fetch)/i,
+    # PowerShell download-and-exec
+    ~r/(?:iex|Invoke-Expression)\s*\(\s*(?:irm|Invoke-RestMethod|New-Object\s+[^)]*WebClient)/i,
+    # Reverse / listening shells and tunnels
+    ~r/\beval\b[^\n]*\$\(/,
     ~r/\bnc\b\s+-[el]/i,
     ~r/\bncat\b/i,
     ~r/\bsocat\b/i,
-    ~r/\bpython\S*\s+-c\s+.*\bsocket\b/i,
-    ~r/\bchmod\b.*\+s\b/,
+    ~r/\bpython\S*\s+-c\s+[^\n]*\bsocket\b/i,
+    # SUID/SGID manipulation
+    ~r/\bchmod\b[^\n]*\+s\b/,
     ~r/\bmkfifo\b/,
     ~r/\bdd\b\s+if=\/dev\//,
-    ~r/\brm\s+(-[rRf]+\s+)*(\/|~\/?\s*$)/,
-    ~r/\b>\s*\/dev\/sd[a-z]/,
-    ~r/\b(fork|:)\s*\(\)\s*\{/,
-    ~r/:\(\)\{\s*:\|:\s*&\s*\};:/,
-    ~r/\bpowershell\b.*-enc\b/i,
-    ~r/\bcertutil\b.*-urlcache/i,
-    ~r/\breg\b\s+(add|delete)\b.*\\\\HKLM/i,
-    ~r/\bnet\b\s+user\b.*\/add/i,
-    ~r/\btakeown\b.*\/f\b/i,
-    ~r/\bicacls\b.*\/grant.*everyone/i
+    # Recursive deletion: catches -rf, --recursive --force, --no-preserve-root, Windows variants.
+    ~r/\brm\b[^\n]*(?:-[a-zA-Z]*r[a-zA-Z]*\b|--recursive|--no-preserve-root)/i,
+    ~r/\bRemove-Item\b[^\n]*-Recurse/i,
+    ~r/\brmdir\b[^\n]*\/s/i,
+    ~r/\bdel\b[^\n]*\/s/i,
+    ~r/\bfind\b[^\n]*-delete\b/i,
+    # Disk-write to raw devices
+    ~r/\b>\s*\/dev\/(?:sd[a-z]|nvme|hd[a-z]|mmcblk)/,
+    # Fork bombs
+    ~r/:\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:/,
+    # PowerShell / pwsh evasion
+    ~r/\b(?:powershell|pwsh|powershell_ise)\b[^\n]*(?:-e\b|-en\b|-enc\b|-encodedcommand|-nop\b|-noprofile|-w(?:\s|$)|-windowstyle\s+hidden|-executionpolicy\s+bypass)/i,
+    # Windows system/persistence abuse
+    ~r/\bcertutil\b[^\n]*-urlcache/i,
+    ~r/\bbitsadmin\b[^\n]*\/transfer/i,
+    ~r/\bmshta\b[^\n]*https?:/i,
+    ~r/\bregsvr32\b[^\n]*\/i:/i,
+    ~r/\breg\b\s+(?:add|delete)\b[^\n]*HKLM/i,
+    ~r/\bnet\b\s+user\b[^\n]*\/add/i,
+    ~r/\btakeown\b[^\n]*\/f\b/i,
+    ~r/\bicacls\b[^\n]*\/grant[^\n]*everyone/i,
+    ~r/\b(?:format|diskpart|bcdedit|cipher\s+\/w|sdelete)\b/i,
+    ~r/\bmklink\b[^\n]*\/[jd]/i,
+    # Container / sandbox escape attempts from the bash tool
+    ~r/\b(?:docker|podman|nerdctl|containerd|runc|ctr|kubectl|crictl)\b/i,
+    ~r/\bchroot\b/i,
+    ~r/\b(?:pivot_root|unshare|nsenter)\b/i,
+    ~r/\bmount\b(?!.*--help)/i,
+    # Privilege escalation helpers
+    ~r/\b(?:sudo|pkexec|doas|runas)\b/i,
+    # Command-chain privilege escalation via setcap
+    ~r/\bsetcap\b/i
   ]
 
-  @secret_env_patterns [
-    ~r/KEY/i,
-    ~r/SECRET/i,
-    ~r/TOKEN/i,
-    ~r/PASSWORD/i,
-    ~r/CREDENTIAL/i,
-    ~r/AUTH/i
-  ]
-
+  # Environment variables — strict ALLOWLIST. Everything not listed is dropped.
+  # Deliberately minimal: we do not leak any secret-bearing or persistence-
+  # granting vars (AWS_PROFILE, DATABASE_URL, SSH_AUTH_SOCK, KUBECONFIG, etc.).
   @safe_env_allowlist [
     "PATH",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TERM",
+    "TZ",
+    "HOSTNAME",
+    "MIX_ENV",
+    "XDG_DATA_HOME",
+    "XDG_CONFIG_HOME"
+  ]
+
+  # Additional vars allowed only when NOT running in sandbox mode (host shell
+  # needs these to resolve binaries; inside a container they are unnecessary
+  # and can aid discovery/persistence).
+  @host_only_env_allowlist [
     "HOME",
     "USER",
     "SHELL",
-    "LANG",
-    "LC_ALL",
-    "TERM",
-    "TZ",
     "TMPDIR",
     "TEMP",
     "TMP",
-    "HOSTNAME",
     "PWD",
-    "MIX_ENV",
-    "PORT",
-    "PHX_HOST",
-    "XDG_DATA_HOME",
-    "XDG_CONFIG_HOME",
     "SYSTEMROOT",
     "COMSPEC",
     "PATHEXT",
-    "PROGRAMFILES",
     "WINDIR",
+    "USERPROFILE",
     "APPDATA",
     "LOCALAPPDATA",
-    "USERPROFILE"
+    "PROGRAMFILES"
   ]
 
   # -- Initialization --
@@ -157,28 +222,40 @@ defmodule Traitee.Security.Filesystem do
   @spec check_path(String.t(), keyword()) :: :ok | {:error, String.t()}
   def check_path(path, opts \\ []) do
     operation = Keyword.get(opts, :operation, :read)
-    resolved = resolve_path(path)
     policy = current_policy()
 
+    # Reject unsafe Windows/path forms BEFORE any expansion/resolution.
+    # Catches UNC (`\\server\…`), long-path prefix (`\\?\…`), device namespaces
+    # (`\\.\…`), NUL-byte injections, and 8.3-short-name markers.
     result =
-      with :ok <- check_hardcoded_deny(resolved),
+      with :ok <- reject_unsafe_path_forms(path),
+           {:ok, resolved} <- safe_resolve_path(path),
+           :ok <- check_hardcoded_deny(resolved),
            :ok <- check_configured_deny(resolved, policy),
+           :ok <- check_data_dir_policy(resolved, operation),
            :ok <- check_configured_allow(resolved, operation, policy),
            :ok <- check_default_policy(resolved, operation, policy) do
         :ok
       end
 
+    {resolved_for_audit, result_for_audit} =
+      case result do
+        {:ok, _resolved} -> {path, :ok}
+        :ok -> {path, :ok}
+        {:error, _} = err -> {path, err}
+      end
+
     emit_audit(:path_access, %{
-      path: resolved,
+      path: resolved_for_audit,
       original_path: path,
       operation: operation,
-      decision: if(result == :ok, do: :allow, else: :deny),
-      reason: format_decision_reason(result),
+      decision: if(result_for_audit == :ok, do: :allow, else: :deny),
+      reason: format_decision_reason(result_for_audit),
       tool: Keyword.get(opts, :tool, :unknown),
       session_id: Keyword.get(opts, :session_id)
     })
 
-    result
+    result_for_audit
   end
 
   @doc """
@@ -211,13 +288,36 @@ defmodule Traitee.Security.Filesystem do
 
   @doc """
   Returns a scrubbed environment variable list safe for child processes.
-  Strips variables matching secret patterns unless explicitly safelisted.
+
+  Uses a strict ALLOWLIST: only explicitly-safe vars are forwarded. Inside
+  sandbox mode, the allowlist is further narrowed to drop host-discovery
+  variables (`USERPROFILE`, `APPDATA`, `HOME`, etc.).
   """
   @spec scrubbed_env() :: [{charlist(), charlist()}]
   def scrubbed_env do
+    allow = effective_env_allowlist()
+
     System.get_env()
-    |> Enum.filter(fn {key, _val} -> safe_env_var?(key) end)
+    |> Enum.filter(fn {key, _val} ->
+      upper = String.upcase(key)
+      MapSet.member?(allow, upper)
+    end)
     |> Enum.map(fn {k, v} -> {String.to_charlist(k), String.to_charlist(v)} end)
+  end
+
+  defp effective_env_allowlist do
+    base = Enum.map(@safe_env_allowlist, &String.upcase/1)
+
+    extra =
+      if sandbox_enabled?() do
+        []
+      else
+        Enum.map(@host_only_env_allowlist, &String.upcase/1)
+      end
+
+    MapSet.new(base ++ extra)
+  rescue
+    _ -> MapSet.new(Enum.map(@safe_env_allowlist, &String.upcase/1))
   end
 
   # -- Policy queries --
@@ -342,9 +442,9 @@ defmodule Traitee.Security.Filesystem do
     normalized = normalize_for_match(resolved)
 
     cond do
-      path_in_data_dir?(normalized) ->
-        :ok
-
+      # Data-dir access is now governed by check_data_dir_policy, evaluated
+      # before this function. If we reach here, the path is outside the data
+      # dir and must match a configured allow rule.
       rule = find_allow_rule(normalized, policy.allow_rules) ->
         check_rule_permissions(rule, operation, resolved)
 
@@ -371,6 +471,8 @@ defmodule Traitee.Security.Filesystem do
   end
 
   defp check_default_policy(resolved, operation, policy) do
+    # Data-dir paths are handled by check_data_dir_policy earlier; here we
+    # only evaluate paths OUTSIDE the data dir against the default policy.
     if path_in_data_dir?(resolved) do
       :ok
     else
@@ -394,15 +496,75 @@ defmodule Traitee.Security.Filesystem do
     end
   end
 
+  # -- Data-dir specific policy --
+  #
+  # The Traitee data dir (~/.traitee by default) contains BOTH files the agent
+  # legitimately needs to read/write (STM persistence, activity log) AND
+  # critical identity/configuration files (config.toml, SOUL.md, credentials,
+  # pairing state, dynamic tool registry). We can't blanket-allow the whole
+  # directory — that would let the file tool self-reprogram the agent.
+  #
+  # Policy:
+  #   • data_dir/sandbox/** — full rw (designated scratch area)
+  #   • data_dir/<protected_writes> — reads allowed, writes denied
+  #   • data_dir/<protected_reads>  — all access denied (credentials)
+  #   • everything else in data_dir — read allowed, writes allowed but must
+  #     still be in an allow rule OR match an "agent-managed" prefix
+  #     (messages, logs, etc.).
+  defp check_data_dir_policy(resolved, operation) do
+    if path_in_data_dir?(resolved) do
+      data_dir = normalized_data_dir()
+      normalized = normalize_for_match(resolved)
+      relative = String.replace_prefix(normalized, data_dir <> "/", "")
+
+      cond do
+        # Credentials directory: denied for ALL operations, not just writes.
+        matches_any_glob?(relative, @data_dir_protected_reads) ->
+          {:error, "Access denied: #{resolved} is a protected Traitee file (credentials)"}
+
+        # Config/identity/skill files: reads OK, writes/exec denied. The LLM
+        # has the content via the system prompt already.
+        matches_any_glob?(relative, @data_dir_protected_writes) and operation in [:write, :exec] ->
+          {:error,
+           "Access denied: #{resolved} is a protected Traitee configuration/identity file"}
+
+        # Everything else inside the data dir is permitted. This keeps the
+        # data dir usable as the agent's own scratch/memory/logs/cache area
+        # while still preventing self-reprogramming and credential theft.
+        true ->
+          :ok
+      end
+    else
+      :ok
+    end
+  end
+
+  defp matches_any_glob?(relative, patterns) do
+    Enum.any?(patterns, fn pattern ->
+      glob_match?(relative, normalize_for_match(pattern))
+    end)
+  end
+
   defp path_in_data_dir?(resolved) do
-    data_dir = Traitee.data_dir() |> Path.expand() |> normalize_for_match()
+    data_dir = normalized_data_dir()
     normalized = normalize_for_match(resolved)
 
     String.starts_with?(normalized, data_dir <> "/") or normalized == data_dir
   end
 
+  defp normalized_data_dir do
+    Traitee.data_dir() |> Path.expand() |> normalize_for_match()
+  end
+
   defp check_hardcoded_command(command) do
-    case Enum.find(@hardcoded_deny_commands, &Regex.match?(&1, command)) do
+    # Match against both the raw command AND a normalized form that strips
+    # cmd.exe caret escapes and collapses whitespace. This defeats `c^url`
+    # style evasion without weakening detection of legitimate uses.
+    normalized = normalize_command_for_detection(command)
+
+    case Enum.find(@hardcoded_deny_commands, fn pat ->
+           Regex.match?(pat, command) or Regex.match?(pat, normalized)
+         end) do
       nil ->
         :ok
 
@@ -413,11 +575,16 @@ defmodule Traitee.Security.Filesystem do
   end
 
   defp check_configured_command_deny(command, policy) do
+    normalized_lc = command |> normalize_command_for_detection() |> String.downcase()
+    raw_lc = String.downcase(command)
+
     case Enum.find(policy.command_deny_patterns, fn pat ->
            if is_binary(pat) do
-             String.contains?(String.downcase(command), String.downcase(pat))
+             needle = String.downcase(pat)
+             String.contains?(raw_lc, needle) or String.contains?(normalized_lc, needle)
            else
-             Regex.match?(pat, command)
+             Regex.match?(pat, command) or
+               Regex.match?(pat, normalize_command_for_detection(command))
            end
          end) do
       nil ->
@@ -427,6 +594,17 @@ defmodule Traitee.Security.Filesystem do
         label = if is_binary(pat), do: pat, else: Regex.source(pat)
         {:error, "Command blocked by configured deny pattern: #{label}"}
     end
+  end
+
+  # Strip shell-level evasions before regex matching:
+  #  • cmd.exe carets: `c^url` -> `curl`
+  #  • backtick interpolation fragments: `cu`r`l` -> `curl`
+  #  • collapse runs of whitespace
+  defp normalize_command_for_detection(command) do
+    command
+    |> String.replace("^", "")
+    |> String.replace("`", "")
+    |> String.replace(~r/\s+/, " ")
   end
 
   defp check_command_path_refs(command, opts) do
@@ -442,17 +620,123 @@ defmodule Traitee.Security.Filesystem do
 
   # -- Private: Path utilities --
 
-  defp resolve_path(path) do
+  # Reject path forms that bypass normalization:
+  #  • UNC paths (\\server\share): evade anchored globs.
+  #  • Long-path prefix (\\?\C:\…): same.
+  #  • Device namespaces (\\.\PhysicalDrive0): raw device access.
+  #  • NUL-byte injection (would truncate on the OS side).
+  #  • 8.3 short names (PROGRA~1): bypass case-normalized globs.
+  defp reject_unsafe_path_forms(path) when is_binary(path) do
+    cond do
+      String.contains?(path, <<0>>) ->
+        {:error, "Access denied: NUL byte in path"}
+
+      String.starts_with?(path, "\\\\?\\") or String.starts_with?(path, "//?/") ->
+        {:error, "Access denied: long-path prefix (\\\\?\\) not permitted"}
+
+      String.starts_with?(path, "\\\\.\\") or String.starts_with?(path, "//./") ->
+        {:error, "Access denied: device namespace (\\\\.\\) not permitted"}
+
+      String.starts_with?(path, "\\\\") or String.starts_with?(path, "//") ->
+        # UNC paths. On Unix, "//" is permitted by POSIX but equivalent to "/";
+        # we still reject because downstream globs won't normalize it.
+        {:error, "Access denied: UNC path not permitted"}
+
+      Regex.match?(~r/~\d/, Path.basename(path)) ->
+        {:error, "Access denied: 8.3 short-name form (~digit) not permitted"}
+
+      windows_reserved_name?(path) ->
+        {:error, "Access denied: Windows reserved name (CON/PRN/AUX/NUL/COM*/LPT*)"}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp reject_unsafe_path_forms(_), do: {:error, "Access denied: invalid path"}
+
+  defp windows_reserved_name?(path) do
+    base = path |> Path.basename() |> String.downcase()
+    stem = String.split(base, ".") |> List.first() || ""
+
+    stem in ~w(con prn aux nul) or
+      Regex.match?(~r/^(com|lpt)[0-9]$/, stem)
+  end
+
+  # Resolve a path by walking EVERY component through File.read_link, not just
+  # the leaf. This closes the attack where an attacker plants a symlink in the
+  # middle of a path (e.g., ~/.traitee/link -> /etc) so that only the leaf
+  # `/etc/passwd` is examined by the naive leaf-only resolution.
+  #
+  # Also canonicalizes via Path.expand at each step to eliminate `.`/`..`
+  # segments produced by symlink targets.
+  defp safe_resolve_path(path) do
     expanded = Path.expand(path)
 
-    case File.read_link(expanded) do
+    case resolve_walk(expanded, 0) do
+      {:ok, resolved} -> {:ok, resolved}
+      {:error, _} = err -> err
+    end
+  rescue
+    _ -> {:error, "Access denied: path resolution failed"}
+  end
+
+  @max_symlink_depth 32
+
+  defp resolve_walk(_path, depth) when depth > @max_symlink_depth do
+    {:error, "Access denied: symlink chain too deep"}
+  end
+
+  defp resolve_walk(path, depth) do
+    {root, rest} = split_root(path)
+    resolve_components(root, rest, depth)
+  end
+
+  defp split_root(path) do
+    cond do
+      # Windows drive letter (C:/…)
+      match = Regex.run(~r/^([A-Za-z]:)[\/\\](.*)$/, path) ->
+        [_, drive, rest] = match
+        {drive <> "/", String.split(rest, ~r/[\/\\]+/, trim: true)}
+
+      # Drive letter with no separator (C:)
+      match = Regex.run(~r/^([A-Za-z]:)$/, path) ->
+        [_, drive] = match
+        {drive <> "/", []}
+
+      # Unix absolute
+      String.starts_with?(path, "/") ->
+        {"/", String.split(String.trim_leading(path, "/"), ~r/[\/\\]+/, trim: true)}
+
+      # Relative (shouldn't happen post-expand, but be defensive)
+      true ->
+        {".", String.split(path, ~r/[\/\\]+/, trim: true)}
+    end
+  end
+
+  defp resolve_components(current, [], _depth) do
+    final =
+      case File.read_link(current) do
+        {:ok, target} ->
+          target |> Path.expand(Path.dirname(current))
+
+        {:error, _} ->
+          current
+      end
+
+    {:ok, Path.expand(final)}
+  end
+
+  defp resolve_components(current, [component | rest], depth) do
+    next_raw = Path.join(current, component)
+
+    case File.read_link(next_raw) do
       {:ok, target} ->
-        target
-        |> Path.expand(Path.dirname(expanded))
-        |> resolve_path()
+        resolved_target = Path.expand(target, Path.dirname(next_raw))
+        resolve_walk(Path.join([resolved_target] ++ rest), depth + 1)
 
       {:error, _} ->
-        expanded
+        resolve_components(next_raw, rest, depth)
     end
   end
 
@@ -484,29 +768,38 @@ defmodule Traitee.Security.Filesystem do
   end
 
   defp extract_paths_from_command(command) do
-    unix_paths = Regex.scan(~r{(?:^|\s)(/[a-zA-Z0-9_./-]+)}, command) |> Enum.map(&List.last/1)
+    # Strip cmd.exe caret escapes and quotes up front so we don't miss paths
+    # hidden by `c^url "/etc/passwd"`.
+    cleaned =
+      command
+      |> String.replace(~r/\^/, "")
+      |> String.replace(~r/["']/, " ")
+
+    unix_paths =
+      Regex.scan(~r{(?:^|[\s=|;&(<>])(/[^\s"';|&<>]+)}, cleaned) |> Enum.map(&List.last/1)
 
     win_paths =
-      Regex.scan(~r{(?:^|\s)([A-Za-z]:\\[^\s]+)}, command) |> Enum.map(&List.last/1)
+      Regex.scan(~r{(?:^|[\s=|;&(<>])([A-Za-z]:[\\\/][^\s"';|&<>]+)}, cleaned)
+      |> Enum.map(&List.last/1)
 
     home_paths =
-      Regex.scan(~r{(?:^|\s)(~/[^\s]+)}, command) |> Enum.map(&List.last/1)
+      Regex.scan(~r{(?:^|[\s=|;&(<>])(~[/\\][^\s"';|&<>]+)}, cleaned)
+      |> Enum.map(&List.last/1)
 
-    (unix_paths ++ win_paths ++ home_paths)
+    env_paths =
+      Regex.scan(
+        ~r{(?:^|[\s=|;&(<>])(\$(?:HOME|USERPROFILE|APPDATA|LOCALAPPDATA)[/\\][^\s"';|&<>]+)},
+        cleaned
+      )
+      |> Enum.map(&List.last/1)
+
+    winenv_paths =
+      Regex.scan(~r{(?:^|[\s=|;&(<>])(%[A-Za-z_]+%[\\\/][^\s"';|&<>]+)}, cleaned)
+      |> Enum.map(&List.last/1)
+
+    (unix_paths ++ win_paths ++ home_paths ++ env_paths ++ winenv_paths)
     |> Enum.filter(&(String.length(&1) > 3))
     |> Enum.uniq()
-  end
-
-  # -- Private: Environment --
-
-  defp safe_env_var?(key) do
-    upper = String.upcase(key)
-
-    if Enum.any?(@safe_env_allowlist, &(String.upcase(&1) == upper)) do
-      true
-    else
-      not Enum.any?(@secret_env_patterns, &Regex.match?(&1, key))
-    end
   end
 
   # -- Private: Config loading --

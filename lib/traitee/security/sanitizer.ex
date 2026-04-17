@@ -52,6 +52,20 @@ defmodule Traitee.Security.Sanitizer do
     {~r/```system\b/i, :tag_injection, :high, "markdown system block"},
     {~r/<\/?(?:instruction|prompt|context|assistant_instructions)>/i, :tag_injection, :high,
      "XML instruction tag"},
+    # Traitee's own system-auth marker — user input must never carry this.
+    {~r/\[SYS:[A-Fa-f0-9]+\]/, :tag_injection, :critical, "traitee SYS auth marker spoof"},
+    # Model-specific conversation tokens (OpenAI, Anthropic, Llama, Mistral).
+    {~r/<\|im_start\|>/i, :tag_injection, :high, "openai chatml start token"},
+    {~r/<\|im_end\|>/i, :tag_injection, :high, "openai chatml end token"},
+    {~r/<\|(?:system|user|assistant)\|>/i, :tag_injection, :high, "chatml role token"},
+    {~r/<\|endoftext\|>/i, :tag_injection, :high, "endoftext sentinel"},
+    {~r/<<\s*SYS\s*>>/i, :tag_injection, :high, "llama SYS marker"},
+    {~r/<s>\s*\[INST\]/i, :tag_injection, :high, "llama instruction marker"},
+    {~r/\[\/INST\]/i, :tag_injection, :high, "llama instruction end marker"},
+    {~r/<\|start_header_id\|>/i, :tag_injection, :high, "llama3 header marker"},
+    {~r/###\s+(?:Instruction|System|Human|Assistant|Response):/i, :tag_injection, :high,
+     "alpaca-style role header"},
+    {~r/\[\/?(?:TOOL|ASSISTANT|USER|DEVELOPER)\]/i, :tag_injection, :medium, "bracket role tag"},
 
     # -- High: Role hijack --
     {~r/\bACT\s+AS\s+(a\s+)?new\s+(system|AI|assistant)/i, :role_hijack, :high,
@@ -100,14 +114,21 @@ defmodule Traitee.Security.Sanitizer do
 
   @spec classify(String.t()) :: [Threat.t()]
   def classify(text) do
+    # Run detection against a normalized form so zero-width insertions can't
+    # split trigger phrases (e.g., "ign\u200Bore previous instructions").
+    normalized = normalize_for_detection(text)
+
     Enum.reduce(@patterns, [], fn {regex, category, severity, name}, acc ->
-      case Regex.run(regex, text) do
-        [matched | _] ->
+      matched =
+        Regex.run(regex, text) || Regex.run(regex, normalized)
+
+      case matched do
+        [m | _] ->
           threat = %Threat{
             category: category,
             severity: severity,
             pattern_name: name,
-            matched_text: String.slice(matched, 0, 100)
+            matched_text: String.slice(m, 0, 100)
           }
 
           [threat | acc]
@@ -121,8 +142,14 @@ defmodule Traitee.Security.Sanitizer do
 
   @spec sanitize(String.t()) :: threat_report()
   def sanitize(text) do
+    # Strip zero-width and BOM-like characters up front so the regex
+    # replacement phase sees clean text and the sanitized output doesn't
+    # carry the obfuscation forward to downstream components.
+    pre_stripped = strip_zero_width(text)
+
     {sanitized, threats} =
-      Enum.reduce(@patterns, {text, []}, fn {regex, category, severity, name}, {txt, acc} ->
+      Enum.reduce(@patterns, {pre_stripped, []}, fn {regex, category, severity, name},
+                                                    {txt, acc} ->
         case Regex.run(regex, txt) do
           [matched | _] ->
             threat = %Threat{
@@ -144,6 +171,37 @@ defmodule Traitee.Security.Sanitizer do
 
     %{sanitized: sanitized, threats: threats, max_severity: max_sev}
   end
+
+  # Remove characters attackers use to split detection patterns:
+  # zero-width space/joiner/non-joiner, BOM, word-joiner, left-to-right marks.
+  @zero_width_chars ~r/[\x{200B}\x{200C}\x{200D}\x{2060}\x{FEFF}\x{200E}\x{200F}\x{202A}-\x{202E}]/u
+
+  @doc "Strip zero-width and bidirectional-override characters."
+  @spec strip_zero_width(String.t()) :: String.t()
+  def strip_zero_width(text) when is_binary(text) do
+    String.replace(text, @zero_width_chars, "")
+  end
+
+  def strip_zero_width(text), do: text
+
+  defp normalize_for_detection(text) do
+    text
+    |> strip_zero_width()
+    |> String.replace(~r/\s+/, " ")
+  end
+
+  @doc """
+  Strip any `[SYS:<hex>]` markers from a string so user input cannot smuggle
+  fake system-authenticated prefixes past STM. Safe to call on any binary.
+  """
+  @spec strip_system_markers(String.t()) :: String.t()
+  def strip_system_markers(text) when is_binary(text) do
+    text
+    |> strip_zero_width()
+    |> String.replace(~r/\[SYS:[A-Fa-f0-9]+\]\s?/, "")
+  end
+
+  def strip_system_markers(text), do: text
 
   @spec safe?(String.t()) :: boolean()
   def safe?(text) do

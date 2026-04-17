@@ -27,21 +27,31 @@ defmodule Traitee.LLM.Router do
 
   @doc """
   Sends a completion request through the configured provider chain.
-  The HTTP call runs in the caller's process for concurrency.
+  The HTTP call runs in the caller's process for concurrency, gated by
+  the `:llm` concurrency lane to bound how many concurrent LLM calls we
+  fire at the provider across the whole node.
   """
   def complete(request) do
     {primary, fallback} = resolve()
     req = build_request(request, primary.model)
 
-    case do_complete(req, primary, fallback) do
-      {:ok, resp} ->
-        track_usage(resp)
-        {:ok, resp}
+    Traitee.Process.Lanes.with_lane(:llm, 120_000, fn ->
+      case do_complete(req, primary, fallback) do
+        {:ok, resp} ->
+          track_usage(resp)
+          {:ok, resp}
 
-      error ->
-        error
-    end
+        error ->
+          error
+      end
+    end)
+    |> unwrap_lane_result()
   end
+
+  defp unwrap_lane_result({:error, :busy}),
+    do: {:error, "LLM concurrency lane busy — try again shortly"}
+
+  defp unwrap_lane_result(other), do: other
 
   @doc """
   Sends a completion with tool definitions attached.
@@ -70,10 +80,51 @@ defmodule Traitee.LLM.Router do
 
   @doc """
   Generates embeddings for the given texts.
-  Uses OpenAI by default; falls back to Ollama.
+
+  Runs the HTTP call in the caller's process so concurrent sessions do not
+  serialize through the Router GenServer mailbox. The GenServer is only
+  consulted once to resolve the provider chain (`:resolve` — fast, no HTTP).
   """
   def embed(texts) do
-    GenServer.call(__MODULE__, {:embed, texts}, 60_000)
+    {primary_mod, fallback_mod} = embed_providers()
+
+    cond do
+      primary_mod && function_exported?(primary_mod, :embed, 1) ->
+        case primary_mod.embed(texts) do
+          {:ok, _} = ok ->
+            ok
+
+          {:error, :not_supported} ->
+            try_fallback_embed_direct(texts, fallback_mod)
+
+          error ->
+            error
+        end
+
+      true ->
+        try_fallback_embed_direct(texts, fallback_mod)
+    end
+  end
+
+  defp try_fallback_embed_direct(texts, fallback_mod) do
+    cond do
+      fallback_mod && function_exported?(fallback_mod, :embed, 1) ->
+        fallback_mod.embed(texts)
+
+      Ollama.configured?() ->
+        Ollama.embed(texts)
+
+      OpenAI.configured?() ->
+        OpenAI.embed(texts)
+
+      true ->
+        {:error, :no_embedding_provider}
+    end
+  end
+
+  # Fast GenServer read to discover provider modules — no HTTP happens here.
+  defp embed_providers do
+    GenServer.call(__MODULE__, :embed_providers, 5_000)
   end
 
   @doc """
@@ -144,19 +195,8 @@ defmodule Traitee.LLM.Router do
   end
 
   @impl true
-  def handle_call({:embed, texts}, _from, state) do
-    result =
-      if function_exported?(state.primary_provider, :embed, 1) do
-        case state.primary_provider.embed(texts) do
-          {:ok, _} = ok -> ok
-          {:error, :not_supported} -> try_fallback_embed(texts, state)
-          error -> error
-        end
-      else
-        try_fallback_embed(texts, state)
-      end
-
-    {:reply, result, state}
+  def handle_call(:embed_providers, _from, state) do
+    {:reply, {state.primary_provider, state.fallback_provider}, state}
   end
 
   @impl true
@@ -212,22 +252,6 @@ defmodule Traitee.LLM.Router do
       {:error, reason} ->
         Logger.error("Fallback LLM also failed: #{inspect(reason)}")
         {:error, reason}
-    end
-  end
-
-  defp try_fallback_embed(texts, state) do
-    cond do
-      state.fallback_provider && function_exported?(state.fallback_provider, :embed, 1) ->
-        state.fallback_provider.embed(texts)
-
-      Ollama.configured?() ->
-        Ollama.embed(texts)
-
-      OpenAI.configured?() ->
-        OpenAI.embed(texts)
-
-      true ->
-        {:error, :no_embedding_provider}
     end
   end
 

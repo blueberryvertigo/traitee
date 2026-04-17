@@ -38,19 +38,42 @@ defmodule Traitee.Session.InterSession do
     end
   end
 
-  @spec send_to_session(String.t(), String.t(), String.t()) :: :ok | {:error, term()}
-  def send_to_session(from_session_id, to_session_id, message) do
-    case Registry.lookup(Traitee.Session.Registry, to_session_id) do
-      [{pid, _}] ->
-        if pid == self() do
-          {:error, :cannot_message_own_session}
-        else
-          prefixed = "[from #{from_session_id}] #{message}"
-          SessionServer.send_message(pid, prefixed, :inter_session)
-        end
+  # Cap inter-session hops to prevent A→B→A→… ping-pong loops that would
+  # otherwise spawn the full security+memory pipeline per hop and eventually
+  # DoS the node's LLM budget.
+  @max_inter_session_hops 2
 
-      [] ->
-        {:error, :session_not_found}
+  @spec send_to_session(String.t(), String.t(), String.t(), keyword()) :: :ok | {:error, term()}
+  def send_to_session(from_session_id, to_session_id, message, opts \\ []) do
+    hop = Keyword.get(opts, :hop, 0)
+
+    cond do
+      hop >= @max_inter_session_hops ->
+        {:error, :inter_session_hop_limit}
+
+      from_session_id == to_session_id ->
+        {:error, :cannot_message_own_session}
+
+      true ->
+        case Registry.lookup(Traitee.Session.Registry, to_session_id) do
+          [{pid, _}] ->
+            if pid == self() do
+              {:error, :cannot_message_own_session}
+            else
+              prefixed = "[from #{from_session_id}] #{message}"
+
+              # Pass the incremented hop count through as a message option so
+              # downstream `sessions.send` calls in the target session know
+              # they're an inter-session descendant.
+              SessionServer.send_message(pid, prefixed, :inter_session,
+                inter_session_depth: hop + 1,
+                sender_id: "inter_session:#{from_session_id}"
+              )
+            end
+
+          [] ->
+            {:error, :session_not_found}
+        end
     end
   end
 

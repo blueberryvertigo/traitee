@@ -82,7 +82,10 @@ defmodule Traitee.Cognition.Dream do
     state = %{state | curiosity_queue: queue}
 
     if :queue.len(queue) >= @curiosity_threshold and no_active_sessions?() and state.enabled do
-      Logger.info("[Dream] Curiosity threshold reached (#{:queue.len(queue)} topics) — triggering dream")
+      Logger.info(
+        "[Dream] Curiosity threshold reached (#{:queue.len(queue)} topics) — triggering dream"
+      )
+
       Process.send_after(self(), :curiosity_dream, 5_000)
     end
 
@@ -111,7 +114,10 @@ defmodule Traitee.Cognition.Dream do
   @impl true
   def handle_info({:session_ended, _session_id}, state) do
     if state.enabled and no_active_sessions?() and :queue.len(state.curiosity_queue) > 0 do
-      Logger.info("[Dream] Last session ended with #{:queue.len(state.curiosity_queue)} curiosity items — dreaming soon")
+      Logger.info(
+        "[Dream] Last session ended with #{:queue.len(state.curiosity_queue)} curiosity items — dreaming soon"
+      )
+
       Process.send_after(self(), :post_session_dream, 30_000)
     end
 
@@ -203,7 +209,11 @@ defmodule Traitee.Cognition.Dream do
     Logger.info("[Dream] Cycle complete (#{elapsed}s, #{state.tokens_used} tokens)")
     broadcast(:dream_completed, log_entry)
 
-    %{state | last_dream: DateTime.utc_now(), dream_log: [log_entry | Enum.take(state.dream_log, 19)]}
+    %{
+      state
+      | last_dream: DateTime.utc_now(),
+        dream_log: [log_entry | Enum.take(state.dream_log, 19)]
+    }
   end
 
   # -- Cycle 1: Memory Consolidation --
@@ -243,16 +253,24 @@ defmodule Traitee.Cognition.Dream do
     _ -> :ok
   end
 
+  # Properly merge a duplicate entity into a primary:
+  #   1. Reassign the duplicate's facts and relations to the primary.
+  #   2. Delete the now-empty duplicate entity row.
+  #
+  # Previously this function COPIED facts (via LTM.add_fact) without deleting
+  # the duplicate — so the next Dream cycle found the same duplicates and
+  # copied their facts again, blowing up the facts table exponentially. It
+  # also called `LTM.upsert_entity` which bumped `mention_count` a spurious
+  # time, perverting importance scoring. Both are fixed here.
   defp merge_entity_into(source, target) do
-    source_facts = LTM.get_facts(source.id)
-
-    Enum.each(source_facts, fn fact ->
-      LTM.add_fact(target.id, fact.content, fact.fact_type)
-    end)
-
-    LTM.upsert_entity(target.name, target.entity_type, source.description || target.description)
+    LTM.reassign_facts(source.id, target.id)
+    LTM.reassign_relations(source.id, target.id)
+    LTM.delete_entity(source.id)
+    :ok
   rescue
-    _ -> :ok
+    e ->
+      Logger.debug("[Dream] merge_entity_into failed: #{inspect(e)}")
+      :ok
   end
 
   defp connect_orphaned_entities(state) do
@@ -296,20 +314,48 @@ defmodule Traitee.Cognition.Dream do
     end
   end
 
+  # Compute entity importance scores and persist them (as a metadata tag
+  # on the entity description — no schema change). Previously this function
+  # computed `importance` but threw it away, wasting a full-table scan per
+  # dream cycle. We now use it to weight cognition-layer retrieval:
+  #   importance ≈ 0.4 * mention_weight + 0.3 * relation_density + 0.3 * fact_density
+  # Rather than adding a new column we round and stamp into `metadata`.
   defp score_entity_importance do
     LTM.all_entities()
     |> Enum.each(fn entity ->
-      relations = LTM.get_relations(entity.id)
-      facts = LTM.get_facts(entity.id)
-      relation_density = length(relations) / max(1.0, 10.0)
-      fact_density = length(facts) / max(1.0, 20.0)
+      relations_count = entity |> get_relations_count_safe()
+      facts_count = entity |> get_facts_count_safe()
+      relation_density = relations_count / 10.0
+      fact_density = facts_count / 20.0
       mention_weight = (entity.mention_count || 1) / 10.0
 
-      _importance = min(mention_weight * 0.4 + relation_density * 0.3 + fact_density * 0.3, 1.0)
-      :ok
+      importance = min(mention_weight * 0.4 + relation_density * 0.3 + fact_density * 0.3, 1.0)
+
+      # Persist via metadata map — best-effort; no crash if schema lacks
+      # metadata column on this entity.
+      try do
+        LTM.set_entity_metadata(
+          entity.id,
+          Map.put(entity.metadata || %{}, "importance", importance)
+        )
+      rescue
+        _ -> :ok
+      end
     end)
   rescue
     _ -> :ok
+  end
+
+  defp get_relations_count_safe(entity) do
+    LTM.get_relations(entity.id) |> length()
+  rescue
+    _ -> 0
+  end
+
+  defp get_facts_count_safe(entity) do
+    LTM.get_facts(entity.id) |> length()
+  rescue
+    _ -> 0
   end
 
   # -- Cycle 2: Auto-Research --
@@ -425,8 +471,13 @@ defmodule Traitee.Cognition.Dream do
 
         (parsed["relations"] || [])
         |> Enum.each(fn r ->
-          source = LTM.get_entity_by_name(r["source"], "concept") || LTM.get_entity_by_name(r["source"], "research_topic")
-          target = LTM.get_entity_by_name(r["target"], "concept") || LTM.get_entity_by_name(r["target"], "research_topic")
+          source =
+            LTM.get_entity_by_name(r["source"], "concept") ||
+              LTM.get_entity_by_name(r["source"], "research_topic")
+
+          target =
+            LTM.get_entity_by_name(r["target"], "concept") ||
+              LTM.get_entity_by_name(r["target"], "research_topic")
 
           if source && target do
             LTM.add_relation(source.id, target.id, r["relation_type"] || "related_to")
@@ -627,7 +678,12 @@ defmodule Traitee.Cognition.Dream do
           target = LTM.search_entities(r["target"]) |> List.first()
 
           if source && target do
-            LTM.add_relation(source.id, target.id, r["relation_type"] || "related_to", r["description"])
+            LTM.add_relation(
+              source.id,
+              target.id,
+              r["relation_type"] || "related_to",
+              r["description"]
+            )
           end
         end)
 

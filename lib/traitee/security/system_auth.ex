@@ -81,6 +81,28 @@ defmodule Traitee.Security.SystemAuth do
     :ok
   end
 
+  @doc """
+  Strip any `[SYS:<hex>]` markers from user input so attackers cannot smuggle
+  fake authenticated system prefixes past the pipeline. This is the
+  server-side verify step that the previous design lacked — the LLM was told
+  to "trust" the tag but nothing ever validated or removed user-supplied
+  copies of it.
+  """
+  @spec strip_markers(String.t()) :: String.t()
+  def strip_markers(text) when is_binary(text) do
+    String.replace(text, ~r/\[SYS:[A-Fa-f0-9]+\]\s?/, "")
+  end
+
+  def strip_markers(text), do: text
+
+  @doc """
+  Rotate the nonce for a session. Cheap (one ETS write) and should be called
+  on every turn so a leaked nonce only remains valid for the turn it leaked
+  in.
+  """
+  @spec rotate(String.t()) :: String.t()
+  def rotate(session_id), do: generate(session_id)
+
   defp marker(nonce), do: "[SYS:#{nonce}]"
 
   defp already_tagged?(content, session_id) do
@@ -88,8 +110,11 @@ defmodule Traitee.Security.SystemAuth do
     String.starts_with?(content, marker(nonce))
   end
 
+  # 128 bits of entropy. Previously 32 bits — brute-forceable by a
+  # determined online attacker within a long conversation if rate limiting
+  # is absent.
   defp random_nonce do
-    :crypto.strong_rand_bytes(4) |> Base.encode16(case: :lower)
+    :crypto.strong_rand_bytes(16) |> Base.encode16(case: :lower)
   end
 
   defp ensure_table do

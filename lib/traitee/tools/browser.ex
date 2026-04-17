@@ -8,6 +8,7 @@ defmodule Traitee.Tools.Browser do
   @behaviour Traitee.Tools.Tool
 
   alias Traitee.Browser.Bridge
+  alias Traitee.Security.ToolOutputGuard
 
   @impl true
   def name, do: "browser"
@@ -102,10 +103,12 @@ defmodule Traitee.Tools.Browser do
 
   def execute(%{"action" => "snapshot"} = args) do
     params = maybe_put(%{}, "pageId", args["pageId"])
+    session_id = args["_session_id"]
 
     case Bridge.call(:snapshot, params) do
       {:ok, %{"snapshot" => snapshot, "url" => url, "title" => title}} ->
-        {:ok, "Page: #{title} (#{url})\n\nAccessibility Tree:\n#{snapshot}"}
+        body = "Page: #{title} (#{url})\n\nAccessibility Tree:\n#{snapshot}"
+        {:ok, guard_external(body, session_id, "browser.snapshot")}
 
       {:error, reason} ->
         {:error, "Snapshot failed: #{format_error(reason)}"}
@@ -181,9 +184,14 @@ defmodule Traitee.Tools.Browser do
       %{"expression" => expr}
       |> maybe_put("pageId", args["pageId"])
 
+    session_id = args["_session_id"]
+
     case Bridge.call(:evaluate, params) do
-      {:ok, %{"result" => result}} -> {:ok, "Result: #{result}"}
-      {:error, reason} -> {:error, "Evaluate failed: #{format_error(reason)}"}
+      {:ok, %{"result" => result}} ->
+        {:ok, guard_external("Result: #{result}", session_id, "browser.evaluate")}
+
+      {:error, reason} ->
+        {:error, "Evaluate failed: #{format_error(reason)}"}
     end
   end
 
@@ -197,9 +205,14 @@ defmodule Traitee.Tools.Browser do
       |> maybe_put("selector", args["selector"])
       |> maybe_put("pageId", args["pageId"])
 
+    session_id = args["_session_id"]
+
     case Bridge.call(:get_text, params) do
-      {:ok, %{"text" => text}} -> {:ok, text}
-      {:error, reason} -> {:error, "Get text failed: #{format_error(reason)}"}
+      {:ok, %{"text" => text}} ->
+        {:ok, guard_external(text, session_id, "browser.get_text")}
+
+      {:error, reason} ->
+        {:error, "Get text failed: #{format_error(reason)}"}
     end
   end
 
@@ -271,4 +284,15 @@ defmodule Traitee.Tools.Browser do
   defp format_error(reason) when is_binary(reason), do: reason
   defp format_error(:timeout), do: "operation timed out"
   defp format_error(reason), do: inspect(reason)
+
+  # Web pages and scripted JS output are attacker-controlled. Scan for
+  # prompt injection, neutralize conversation tokens, wrap as untrusted
+  # external content, and charge any threats to the session.
+  defp guard_external(body, session_id, tool_label) do
+    ToolOutputGuard.scan_and_wrap(body,
+      session_id: session_id,
+      tool: tool_label,
+      source: :external
+    )
+  end
 end

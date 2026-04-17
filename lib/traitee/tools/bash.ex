@@ -58,13 +58,27 @@ defmodule Traitee.Tools.Bash do
 
       result =
         if Docker.enabled?() do
-          Docker.run(command,
-            timeout_ms: timeout,
-            working_dir: working_dir,
-            env: env,
-            session_id: session_id
-          )
-          |> docker_fallback(command, timeout, working_dir, env)
+          # Docker MUST isolate — if the daemon is unreachable we refuse
+          # rather than silently dropping the sandbox. A silent host
+          # fallback would let an attacker DoS Docker to gain full-trust
+          # shell access.
+          case Docker.run(command,
+                 timeout_ms: timeout,
+                 working_dir: working_dir,
+                 env: env,
+                 session_id: session_id
+               ) do
+            {:ok, res} ->
+              {:ok, res}
+
+            {:error, {:docker_unavailable, reason}} ->
+              {:error,
+               {:sandbox_unavailable,
+                "Docker isolation is enabled but the daemon is unreachable: #{inspect(reason)}"}}
+
+            {:error, reason} ->
+              {:error, reason}
+          end
         else
           Executor.run(command,
             timeout_ms: timeout,
@@ -83,6 +97,9 @@ defmodule Traitee.Tools.Bash do
         {:error, :timeout} ->
           {:error, "Command timed out after #{timeout}ms"}
 
+        {:error, {:sandbox_unavailable, msg}} ->
+          {:error, "Sandbox unavailable: #{msg}"}
+
         {:error, reason} ->
           {:error, "Command failed: #{inspect(reason)}"}
       end
@@ -90,14 +107,6 @@ defmodule Traitee.Tools.Bash do
   end
 
   def execute(_), do: {:error, "Missing required parameter: command"}
-
-  defp docker_fallback({:ok, result}, _cmd, _timeout, _dir, _env), do: {:ok, result}
-
-  defp docker_fallback({:error, {:docker_unavailable, _}}, cmd, timeout, dir, env) do
-    Executor.run(cmd, timeout_ms: timeout, working_dir: dir, env: env)
-  end
-
-  defp docker_fallback({:error, reason}, _cmd, _timeout, _dir, _env), do: {:error, reason}
 
   defp resolve_working_dir(nil) do
     if Sandbox.sandbox_enabled?() do
@@ -114,10 +123,20 @@ defmodule Traitee.Tools.Bash do
       sandbox_root = Sandbox.sandbox_working_dir()
       expanded = Path.expand(dir)
 
-      normalized_root = String.replace(sandbox_root, "\\", "/")
+      # Append a trailing separator before comparison so "/foo/sandbox-evil"
+      # is NOT considered a child of "/foo/sandbox".
+      normalized_root =
+        sandbox_root
+        |> String.replace("\\", "/")
+        |> String.trim_trailing("/")
+
       normalized_dir = String.replace(expanded, "\\", "/")
 
-      if String.starts_with?(normalized_dir, normalized_root) do
+      in_sandbox? =
+        normalized_dir == normalized_root or
+          String.starts_with?(normalized_dir, normalized_root <> "/")
+
+      if in_sandbox? do
         File.mkdir_p!(expanded)
         expanded
       else

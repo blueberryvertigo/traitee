@@ -8,8 +8,7 @@ defmodule Traitee.Router do
   alias Traitee.AutoReply.{CommandRegistry, Pipeline}
   alias Traitee.Channels.Typing
   alias Traitee.Routing.AgentRouter
-  alias Traitee.Security.Allowlist
-  alias Traitee.Security.Pairing
+  alias Traitee.Security.{Allowlist, Audit, Pairing, RateLimiter}
   alias Traitee.Session
   alias Traitee.Session.Server, as: SessionServer
 
@@ -19,6 +18,7 @@ defmodule Traitee.Router do
     %{text: text, sender_id: sender_id, channel_type: channel_type} = inbound
 
     with :ok <- check_security(inbound),
+         :ok <- check_rate_limit(inbound),
          :pass <- check_auto_reply(inbound) do
       if chat_command?(text) do
         handle_command(text, inbound)
@@ -33,6 +33,12 @@ defmodule Traitee.Router do
         deliver_response(
           inbound,
           "You're not yet approved. Your pairing code is: #{code}\nAsk the owner to run: /pairing approve #{code}"
+        )
+
+      {:rate_limited, retry_after_ms} ->
+        deliver_response(
+          inbound,
+          "You're sending messages too quickly. Please wait #{div(retry_after_ms, 1000) + 1}s and try again."
         )
 
       {:auto_reply, response} ->
@@ -58,6 +64,36 @@ defmodule Traitee.Router do
     else
       :ok
     end
+  end
+
+  # Real per-sender rate limiting applied at the router. The previous
+  # Hooks.Engine-based wiring never fired because Hooks.Engine.fire/2 was
+  # not called from production code. We use the sender_id as the key so
+  # an attacker cannot create fresh sessions to sidestep the limit.
+  defp check_rate_limit(inbound) do
+    key = {:inbound, inbound.channel_type, to_string(inbound.sender_id)}
+
+    case RateLimiter.check(key) do
+      :ok ->
+        :ok
+
+      {:error, :rate_limited, retry_after_ms} ->
+        Audit.record(:rate_limited, %{
+          channel: inbound.channel_type,
+          sender: to_string(inbound.sender_id),
+          decision: :deny,
+          reason: "inbound rate limit exhausted",
+          retry_after_ms: retry_after_ms
+        })
+
+        {:rate_limited, retry_after_ms}
+    end
+  rescue
+    # Fail-open on RateLimiter errors so a misconfigured/absent ETS table
+    # doesn't brick the bot, but log loudly.
+    e ->
+      Logger.warning("[Router] RateLimiter check failed: #{inspect(e)} — proceeding")
+      :ok
   end
 
   defp check_dm_policy(sender_id, channel_type) do

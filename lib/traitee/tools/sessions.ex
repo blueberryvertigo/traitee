@@ -87,9 +87,13 @@ defmodule Traitee.Tools.Sessions do
   end
 
   def execute(%{"action" => "send", "session_id" => sid, "message" => msg} = args) do
-    from = args["from_session_id"] || "system"
+    # The caller session_id is injected by Session.Server.execute_tools and
+    # MUST NOT be taken from LLM-supplied args — previously the LLM could
+    # spoof `from_session_id: "system"` to launder messages across sessions.
+    from = args["_session_id"] || "unknown"
+    hop = args["_inter_session_depth"] || 0
 
-    case InterSession.send_to_session(from, sid, msg) do
+    case InterSession.send_to_session(from, sid, msg, hop: hop) do
       :ok ->
         {:ok, "Message sent to session #{sid}."}
 

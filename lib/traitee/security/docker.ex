@@ -103,6 +103,11 @@ defmodule Traitee.Security.Docker do
 
   # -- Private --
 
+  # Run as an unprivileged user inside the container. `nobody`/`nogroup`
+  # on most base images. For Alpine, UID/GID 65534 are `nobody`/`nobody`.
+  @container_uid "65534"
+  @container_gid "65534"
+
   defp execute_in_container(command, opts) do
     policy = Filesystem.current_policy()
     timeout = Keyword.get(opts, :timeout_ms, 30_000)
@@ -131,8 +136,25 @@ defmodule Traitee.Security.Docker do
         "100",
         "--tmpfs",
         "/tmp:rw,noexec,nosuid,size=64m",
+        # Run as unprivileged user (previously defaulted to root inside the
+        # container, which combined with writable bind mounts let the model
+        # plant setuid binaries / modify host files as UID 0).
+        "--user",
+        "#{@container_uid}:#{@container_gid}",
+        # Drop ALL Linux capabilities. The default Docker cap set includes
+        # CHOWN, DAC_OVERRIDE, SETUID, SETGID — any of which can be abused
+        # in-container for host-mount attacks when combined with the user
+        # namespace.
+        "--cap-drop",
+        "ALL",
+        # Prevent new-privileges and (implicitly) setuid elevation.
         "--security-opt",
         "no-new-privileges",
+        # File-descriptor + file-size ulimits on top of pids-limit.
+        "--ulimit",
+        "nofile=256:256",
+        "--ulimit",
+        "fsize=67108864:67108864",
         "--workdir",
         working_dir
       ] ++
@@ -172,20 +194,35 @@ defmodule Traitee.Security.Docker do
     e -> {:error, "Docker execution failed: #{Exception.message(e)}"}
   end
 
+  # Build the set of container bind mounts. The previous implementation had
+  # two significant bugs:
+  #
+  #   1. It filtered OUT any allow_rule whose pattern contained `*`, so
+  #      the idiomatic `"/home/user/project/**"` glob produced NO mount,
+  #      silently denying the container access. The workaround was to
+  #      drop the `/**` suffix in config, which then mounted the whole
+  #      tree as host-path=container-path. That reveals host topology to
+  #      any in-container escape primitive.
+  #
+  #   2. Mounts echoed the host path as the container path, so the model
+  #      inside the container learned exact host filesystem layout.
+  #
+  # We now:
+  #   • strip a trailing `/**` from glob patterns and accept them,
+  #   • remap every mount to `/mnt/allow<N>` inside the container so host
+  #     topology is never revealed,
+  #   • always mount the sandbox scratch at `/workspace` (rw).
   defp build_mounts(policy, extra_mounts) do
     sandbox_dir = Filesystem.sandbox_working_dir()
     File.mkdir_p!(sandbox_dir)
 
     allow_mounts =
       policy.allow_rules
-      |> Enum.filter(fn rule ->
-        pattern = rule.pattern
-        not String.contains?(pattern, "*") and File.exists?(String.trim_trailing(pattern, "/"))
-      end)
-      |> Enum.map(fn rule ->
-        host_path = String.trim_trailing(rule.pattern, "/**") |> Path.expand()
-        mode = if :write in (rule.permissions || []), do: "rw", else: "ro"
-        {host_path, host_path, mode}
+      |> Enum.map(&rule_to_mount/1)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.with_index()
+      |> Enum.map(fn {{host_path, mode}, idx} ->
+        {host_path, "/mnt/allow#{idx}", mode}
       end)
 
     all_mounts =
@@ -195,6 +232,30 @@ defmodule Traitee.Security.Docker do
       ["-v", "#{host}:#{container}:#{mode}"]
     end)
   end
+
+  defp rule_to_mount(%{pattern: pattern} = rule) do
+    # Strip glob suffixes so the underlying directory is the mount root.
+    # Patterns with embedded `*` (not just a trailing `/**`) are ambiguous
+    # for a single mount and are skipped.
+    host_path =
+      pattern
+      |> String.trim_trailing("/**")
+      |> String.trim_trailing("/*")
+
+    cond do
+      String.contains?(host_path, "*") ->
+        nil
+
+      not File.exists?(host_path) ->
+        nil
+
+      true ->
+        mode = if :write in (rule.permissions || []), do: "rw", else: "ro"
+        {Path.expand(host_path), mode}
+    end
+  end
+
+  defp rule_to_mount(_), do: nil
 
   defp build_env_flags(env_vars) do
     Enum.flat_map(env_vars, fn

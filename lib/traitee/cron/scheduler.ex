@@ -124,12 +124,32 @@ defmodule Traitee.Cron.Scheduler do
 
   defp execute_job(job) do
     message = job.payload["message"] || inspect(job.payload)
-    channel = if job.channel, do: String.to_existing_atom(job.channel), else: :cli
+    # Defensive: use String.to_existing_atom in a try-rescue so a malformed
+    # persisted channel doesn't crash the scheduler.
+    channel =
+      try do
+        if job.channel, do: String.to_existing_atom(job.channel), else: :cli
+      rescue
+        ArgumentError -> :cli
+      end
+
     target = job.target || "cron:#{job.name}"
 
     case Traitee.Session.ensure_started(target, channel) do
       {:ok, pid} ->
-        Traitee.Session.Server.send_message(pid, message, channel)
+        # Cron-fired messages bypass the inbound Router (no channel
+        # handshake exists for an OS-scheduled job). To preserve the
+        # cognitive-security pipeline, we go through
+        # Session.Server.send_message which still runs Sanitizer/Judge/
+        # ThreatTracker and threat-gating inside the session.
+        #
+        # Tag the delivery so the session's owner-check sees this call
+        # as system-originated rather than attacker-originated.
+        Traitee.Session.Server.send_message(pid, message, channel,
+          sender_id: "cron:#{job.name}",
+          reply_to: nil
+        )
+
         Logger.info("Cron job #{job.name} executed")
 
       {:error, reason} ->

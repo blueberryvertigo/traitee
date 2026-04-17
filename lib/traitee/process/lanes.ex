@@ -2,10 +2,14 @@ defmodule Traitee.Process.Lanes do
   @moduledoc "Execution lanes for concurrency-limited process execution."
   use GenServer
 
+  # Bump defaults to levels that actually permit concurrent multi-session
+  # operation. The previous `llm: 1` would have serialized every LLM call
+  # across the entire node. These values target modern LLM-API concurrency
+  # ceilings and are config-overridable via `process.lanes.<lane>.max`.
   @default_lanes %{
-    tool: %{max: 3},
-    embed: %{max: 2},
-    llm: %{max: 1}
+    tool: %{max: 8},
+    embed: %{max: 4},
+    llm: %{max: 8}
   }
 
   defstruct lanes: %{}

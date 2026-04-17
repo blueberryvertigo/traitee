@@ -10,6 +10,7 @@ defmodule Traitee.Tools.WorkspaceEdit do
 
   @behaviour Traitee.Tools.Tool
 
+  alias Traitee.Security.ToolGate
   alias Traitee.Workspace
 
   @allowed_files %{
@@ -65,6 +66,8 @@ defmodule Traitee.Tools.WorkspaceEdit do
 
   @impl true
   def execute(%{"action" => "read", "file" => file}) do
+    # Reads are not owner-gated — they only expose the current content
+    # which the LLM already has via its system prompt.
     with {:ok, key} <- resolve_file(file) do
       case Workspace.read_raw(key) do
         {:ok, content} -> {:ok, content}
@@ -74,9 +77,12 @@ defmodule Traitee.Tools.WorkspaceEdit do
     end
   end
 
-  def execute(%{"action" => "patch", "file" => file, "old_string" => old, "new_string" => new})
+  def execute(
+        %{"action" => "patch", "file" => file, "old_string" => old, "new_string" => new} = args
+      )
       when is_binary(old) and is_binary(new) do
-    with {:ok, key} <- resolve_file(file) do
+    with :ok <- ToolGate.require_owner(args, "workspace_edit"),
+         {:ok, key} <- resolve_file(file) do
       Workspace.patch_file(key, old, new)
     end
   end
@@ -85,9 +91,10 @@ defmodule Traitee.Tools.WorkspaceEdit do
     {:error, "Missing required parameters: file, old_string, new_string"}
   end
 
-  def execute(%{"action" => "append", "file" => file, "content" => content})
+  def execute(%{"action" => "append", "file" => file, "content" => content} = args)
       when is_binary(content) do
-    with {:ok, key} <- resolve_file(file) do
+    with :ok <- ToolGate.require_owner(args, "workspace_edit"),
+         {:ok, key} <- resolve_file(file) do
       Workspace.append_to_file(key, content)
     end
   end

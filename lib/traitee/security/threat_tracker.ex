@@ -12,6 +12,11 @@ defmodule Traitee.Security.ThreatTracker do
   @table :traitee_threat_tracker
   @decay_half_life_ms 10 * 60 * 1_000
   @severity_weight %{low: 1, medium: 3, high: 7, critical: 15}
+  # Bound the per-session event list. Threats are scored by weight × decay,
+  # so retaining more than a few hundred events has vanishing analytical
+  # value and was previously exploitable as a memory-DoS (each record wrote
+  # the entire list back to ETS — O(n²) over the session).
+  @max_events_per_session 200
 
   @type threat_level :: :normal | :elevated | :high | :critical
   @type event :: %{
@@ -34,10 +39,16 @@ defmodule Traitee.Security.ThreatTracker do
 
     event = %{threat: threat, timestamp: now}
 
+    # Prepend (O(1)) and cap the list so the tracker remains bounded. The
+    # list order is now newest-first; threat_score/1 handles either order
+    # since it doesn't depend on ordering.
     events =
       case :ets.lookup(@table, session_id) do
-        [{^session_id, existing}] -> existing ++ [event]
-        [] -> [event]
+        [{^session_id, existing}] ->
+          [event | existing] |> Enum.take(@max_events_per_session)
+
+        [] ->
+          [event]
       end
 
     :ets.insert(@table, {session_id, events})

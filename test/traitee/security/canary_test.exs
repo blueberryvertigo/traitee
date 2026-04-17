@@ -13,7 +13,8 @@ defmodule Traitee.Security.CanaryTest do
   test "generates unique canary tokens", %{session: session} do
     token = Canary.generate(session)
     assert String.starts_with?(token, "CANARY-")
-    assert String.length(token) == 19
+    # 128 bits of entropy as 32 hex chars, prefixed with "CANARY-" (7 chars).
+    assert String.length(token) == 7 + 32
   end
 
   test "get returns nil for unknown session" do
