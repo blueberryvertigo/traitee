@@ -15,15 +15,14 @@ defmodule Traitee.Cognition.Metacognition do
   require Logger
 
   @check_interval_ms 30 * 60_000
-  @table :traitee_metacognition
+  @max_tracked_sessions 200
+  @max_workshop_feedback 500
 
-  defstruct [
-    calibration: %{},
-    failure_patterns: [],
-    improvement_history: [],
-    workshop_feedback: %{},
-    last_check: nil
-  ]
+  defstruct calibration: %{},
+            failure_patterns: [],
+            improvement_history: [],
+            workshop_feedback: %{},
+            last_check: nil
 
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -40,7 +39,8 @@ defmodule Traitee.Cognition.Metacognition do
   end
 
   @doc "Record user feedback on a workshop project."
-  def record_workshop_feedback(project_id, feedback) when feedback in [:accept, :reject, :ignore] do
+  def record_workshop_feedback(project_id, feedback)
+      when feedback in [:accept, :reject, :ignore] do
     GenServer.cast(__MODULE__, {:workshop_feedback, project_id, feedback})
     Workshop.user_feedback(project_id, feedback)
   end
@@ -54,7 +54,6 @@ defmodule Traitee.Cognition.Metacognition do
 
   @impl true
   def init(_opts) do
-    init_table()
     Phoenix.PubSub.subscribe(Traitee.PubSub, "workshop:events")
     Phoenix.PubSub.subscribe(Traitee.PubSub, "dream:events")
     schedule_check()
@@ -73,7 +72,13 @@ defmodule Traitee.Cognition.Metacognition do
 
     claims = Map.get(state.calibration, session_id, [])
     updated = [entry | Enum.take(claims, 99)]
-    calibration = Map.put(state.calibration, session_id, updated)
+
+    # Cap the number of DISTINCT sessions tracked; oldest-by-insertion order
+    # get dropped. Previously entries for dead sessions accumulated forever.
+    calibration =
+      state.calibration
+      |> Map.put(session_id, updated)
+      |> cap_map_size(@max_tracked_sessions)
 
     {:noreply, %{state | calibration: calibration}}
   end
@@ -97,9 +102,26 @@ defmodule Traitee.Cognition.Metacognition do
 
   @impl true
   def handle_cast({:workshop_feedback, project_id, feedback}, state) do
-    ws_feedback = Map.put(state.workshop_feedback, project_id, feedback)
+    ws_feedback =
+      state.workshop_feedback
+      |> Map.put(project_id, feedback)
+      |> cap_map_size(@max_workshop_feedback)
+
     {:noreply, %{state | workshop_feedback: ws_feedback}}
   end
+
+  # Drop-oldest eviction when a map grows past its cap. We don't have an
+  # explicit insertion order; map iteration order is stable per-key but not
+  # time-ordered — as a rough proxy we just drop whichever keys the enum
+  # visits last over the cap. Good enough: per-session lists already cap at
+  # 99 entries so each dropped session is ≤99 items.
+  defp cap_map_size(map, cap) when map_size(map) > cap do
+    drop_count = map_size(map) - cap
+    keys_to_drop = map |> Map.keys() |> Enum.take(drop_count)
+    Map.drop(map, keys_to_drop)
+  end
+
+  defp cap_map_size(map, _cap), do: map
 
   @impl true
   def handle_info(:check, state) do
@@ -183,7 +205,9 @@ defmodule Traitee.Cognition.Metacognition do
     total = map_size(feedback)
 
     if total > 3 and reject_count / total > 0.5 do
-      Logger.info("[Metacognition] High project rejection rate (#{reject_count}/#{total}). Adjusting ideation.")
+      Logger.info(
+        "[Metacognition] High project rejection rate (#{reject_count}/#{total}). Adjusting ideation."
+      )
 
       owner_id = Traitee.Config.get([:security, :owner_id])
 
@@ -239,7 +263,11 @@ defmodule Traitee.Cognition.Metacognition do
   defp apply_improvement(content, state) do
     case parse_json(content) do
       {:ok, %{"suggestion" => suggestion, "target" => "soul"}} ->
-        case Workspace.append_to_file("SOUL", "\n\n## Self-Improvement Note\n#{suggestion}") do
+        # Workspace.append_to_file/2 is guarded by `key in [:soul, :agents, :tools]`.
+        # Previously this passed the string "SOUL" which silently raised a
+        # FunctionClauseError (caught by the outer rescue) — the entire
+        # SOUL self-improvement feature was inoperative.
+        case Workspace.append_to_file(:soul, "\n\n## Self-Improvement Note\n#{suggestion}") do
           :ok ->
             entry = %{type: :soul_update, suggestion: suggestion, applied_at: DateTime.utc_now()}
             Logger.info("[Metacognition] Applied self-improvement to SOUL.md")
@@ -251,7 +279,13 @@ defmodule Traitee.Cognition.Metacognition do
 
       {:ok, %{"suggestion" => suggestion}} ->
         {:ok, entity} = LTM.upsert_entity("self_improvement", "metacognition")
-        LTM.add_fact(entity.id, suggestion, "improvement_suggestion")
+        # Store at reduced confidence to match compactor-style provenance —
+        # these are self-generated, not user-grounded, and should rank below
+        # real user memories in retrieval.
+        LTM.add_fact(entity.id, suggestion, "improvement_suggestion", nil,
+          confidence: 0.4,
+          metadata: %{"source" => "metacognition"}
+        )
 
         entry = %{type: :ltm_note, suggestion: suggestion, applied_at: DateTime.utc_now()}
         %{state | improvement_history: [entry | Enum.take(state.improvement_history, 49)]}
@@ -319,12 +353,6 @@ defmodule Traitee.Cognition.Metacognition do
     |> String.replace(~r/^```json\n?/, "")
     |> String.replace(~r/\n?```$/, "")
     |> Jason.decode()
-  end
-
-  defp init_table do
-    if :ets.whereis(@table) == :undefined do
-      :ets.new(@table, [:named_table, :public, :set, read_concurrency: true])
-    end
   end
 
   defp schedule_check do

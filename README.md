@@ -11,9 +11,13 @@ Traitee is a personal AI assistant gateway. Connect it to Discord, Telegram, Wha
 
 **Memory that persists.** Three-tier hierarchy — short-term (ETS ring buffers), mid-term (LLM-generated summaries), long-term (knowledge graph with entities, relations, and facts). Semantic retrieval via Nx vector search with MMR diversity and temporal decay. Your assistant remembers across conversations.
 
-**Cognitive security.** 16-module defense-in-depth system. Regex sanitizer + LLM judge on input, per-session threat tracking with temporal decay, adaptive identity reinforcement, system message authentication nonces, canary tokens for leak detection, and a ~70-pattern output guard. Filesystem protection with hardcoded denylists, configurable sandbox, exec gates, optional Docker isolation, and full audit trail. The assistant protects itself from prompt injection — and protects your host from the assistant.
+**Cognitive security.** Defense-in-depth against prompt injection. Regex sanitizer + LLM judge on input, per-session threat tracking with temporal decay, 128-bit per-turn-rotated system-auth nonces, 128-bit canary tokens with obfuscation-tolerant leak detection, and a ~70-pattern output guard on every turn. Tool output is quarantined through a dedicated scanner that neutralizes `[SYS:]` markers, ChatML/Llama/Alpaca conversation tokens, and zero-width injections before the LLM ever sees it. Retrieved memory, subagent results, and workshop announcements are clearly labeled as untrusted data rather than system instructions. Threat score actually gates the pipeline: `:critical` refuses the turn, `:high` strips high-risk tools, `:elevated` reduces tool-loop depth.
 
-**Distributed by default.** Every session is an isolated BEAM process with its own memory, threat score, and crash boundary. One bad session can't touch another. Concurrency lanes limit parallel tool/LLM/embedding calls. The supervision tree restarts failures automatically.
+**Sandbox that sandboxes.** Filesystem policy with explicit per-path sub-rules inside `~/.traitee` (config/SOUL.md/skills/credentials deny-write, sandbox/ scratch rw), walk-all-segments symlink resolution, TOCTOU-safe file tool, Windows-aware rejection of UNC / long-path / 8.3 / device-namespace forms, strict allowlist env scrubbing. Docker isolation runs as UID 65534, `--cap-drop=ALL`, ulimits, and remapped bind mounts (no host-path leakage); fails closed when the daemon is unreachable instead of silently dropping back to the host.
+
+**Distributed by default.** Every session is an isolated BEAM process with its own memory, threat score, and crash boundary. One bad session can't touch another. Concurrency lanes cap parallel LLM/embedding/tool calls (defaults `llm:8 embed:4 tool:8`, config-tunable). Delegation runs under a `Task.Supervisor` so subagent work doesn't leak past session crashes. The supervision tree restarts failures automatically.
+
+**Fast hot path.** Tool calls in a single LLM round execute in parallel via `Task.async_stream` with order-preserving pairing — multi-tool rounds take max(calls) instead of sum(calls). The user message is embedded once per turn and threaded into both LTM and MTM retrieval (previously up to 25 embedding round-trips). Tool schemas are cached in `:persistent_term`. Oversized tool outputs (>12KB) are head+tail truncated before re-feeding into subsequent rounds so the prompt doesn't inflate quadratically. Cognition-layer DB reads (workshop queue, user model summary) are 30s-cached.
 
 **12 built-in tools.** Shell execution, file operations, Playwright browser automation, web search, memory management, inter-session communication, cron scheduling, cross-channel messaging, self-improving skills, workspace editing, parallel subagent delegation, and structured task tracking.
 
@@ -117,7 +121,7 @@ Automatic failover between primary and fallback providers. Usage tracking per se
 | `channel_send` | Send messages to any configured channel |
 | `skill_manage` | Create/patch/delete skills (agent's procedural memory) |
 | `workspace_edit` | Read/patch workspace prompts (SOUL.md, AGENTS.md, TOOLS.md) |
-| `delegate_task` | Spawn up to 5 parallel subagents with filtered tool sets + real-time progress tracking |
+| `delegate_task` | Spawn up to 5 parallel subagents under `Task.Supervisor`, with filtered tool sets, threat-level inheritance, description sanitization, and real-time progress tracking |
 | `task_tracker` | Structured per-session todo list |
 | `cognition` | Introspect dream state, workshop projects, user interests, QC status, metacognition |
 
@@ -129,9 +133,17 @@ All filesystem/command tools pass through the full security pipeline. Dynamic to
 
 Two independent pipelines protect every interaction:
 
-**Cognitive (LLM side):** Sanitizer (regex) → Judge (LLM classifier, 3s) → Threat Tracker (per-session, time-decayed) → Cognitive Reminders (adaptive intensity) → Canary Tokens (leak detection) → System Auth (message authentication nonces) → Output Guard (~70 patterns, 14 categories).
+**Cognitive (LLM side):**
+Sanitizer (strips zero-width/bidi, neutralizes `[SYS:]` / ChatML / Llama / Alpaca conversation tokens) → Judge (LLM classifier, 3s) → Threat Tracker (per-session, time-decayed, bounded at 200 events) → Threat-level gate (`:critical` refuses, `:high` strips high-risk tools, `:elevated` caps depth) → Cognitive Reminders (adaptive intensity) → 128-bit Canary (obfuscation-tolerant leak detection, rotated per turn) → System Auth (128-bit nonce, rotated per turn, only tags genuinely-system-authored content) → Output Guard on every turn (intermediate tool rounds too, not just final) → `Traitee.Security.ToolOutputGuard` scans each tool result for injection + nonce forgery before insertion into context.
 
-**Filesystem (tool side):** I/O Guards (fail-closed) → Hardcoded Denylists (~32 path + ~20 command patterns, always on) → Configurable Sandbox (allow/deny with glob patterns) → Exec Gates (approval for risky commands) → Optional Docker isolation → Audit Trail (10K event ring buffer).
+**Filesystem (tool side):**
+IOGuard (fail-closed, catches `throw`/`exit`) → Windows-aware path rejection (UNC, `\\?\`, `\\.\`, 8.3 names, reserved names) → walk-all-segments symlink resolution → Hardcoded denylists (~40 path patterns, ~30 command patterns — blocks `docker`/`podman`/`chroot`/`mount`, handles cmd.exe caret evasion, `-EncodedCommand`, `pwsh`, `iex (irm …)`) → Data-dir sub-policy (config/SOUL/AGENTS/TOOLS/BOOT/skills/credentials deny-write) → Configurable sandbox (glob allow/deny with per-path permissions) → Exec Gates (owner-only sensitive commands) → Docker isolation with `--user 65534`, `--cap-drop=ALL`, `--ulimit`, remapped mounts (fails closed, not host-fallback) → Audit Trail (10K event ring buffer).
+
+**Trust boundaries:**
+Retrieved memory (LTM hits, MTM summaries, compactor-extracted facts), subagent results, workshop announcements, active-task lists, and dynamically-loaded skills are all delivered to the LLM as `role: "user"` with a clearly-marked `[BEGIN UNTRUSTED …]` envelope. Only the built-in system prompt (workspace files + cognition awareness + SystemAuth section + Canary section + cognitive reminders) is stamped with the `[SYS:<nonce>]` tag. A jailbroken LLM cannot be tricked into treating memory or tool output as authenticated system directives.
+
+**Subagent isolation:**
+Delegation runs under a named `Task.Supervisor`. Subagents sanitize their task description, inherit the parent's threat level (reducing their tool set and depth accordingly), and cannot call `delegate_task`/`sessions`/`cron`/`workspace_edit`/`skill_manage`/`channel_send`. `sessions.send` uses the system-injected `_session_id` (no spoofing via LLM args); `InterSession.send_to_session` caps hops at 2 to prevent ping-pong loops.
 
 See [SECURITY.md](SECURITY.md) for the full architecture, threat model, trust boundaries, and hardening checklist.
 
@@ -144,8 +156,8 @@ Traitee has an autonomous cognitive architecture that runs between conversations
 | Module | What it does |
 |--------|-------------|
 | **User Model** | Tracks interests, expertise, desires, active projects, and communication style per user. Extracts signals from every conversation via lightweight LLM calls. Persists to SQLite. |
-| **Dream State** | Activates when no sessions are active. Runs four cycles: memory consolidation (dedup entities, connect orphans, score importance), auto-research (web search + synthesize into LTM), ideation (generate project ideas from interests), and self-reflection (analyze performance, identify patterns). |
-| **Workshop** | Autonomous builder. Takes ideas from the Dream State and builds them: dynamic tools, skills, code projects, and research briefs. Uses file/bash tools through an LLM-driven research → design → build → validate pipeline. |
+| **Dream State** | Activates when no sessions are active. Runs four cycles: memory consolidation (reassigns facts/relations and deletes duplicate entities — prevents the exponential-blowup bug where copies were left orphaned), auto-research (web search + synthesize into LTM at reduced confidence), ideation, and self-reflection. Importance scores now persist into entity metadata. |
+| **Workshop** | Autonomous builder with an always-fires `build_done` signal (no more wedging on crash), idempotency guard (won't re-drive a `ready`/`accepted` project), and a single canonical QC trigger via PubSub (no double-review race). Bounded `completed` state. |
 | **Quality Control** | Gates everything before it reaches the user. Validates workshop projects (completeness, usefulness, correctness). Audits research quality. Sends work back with specific feedback. Hard loop limits: max 3 project revisions, max 2 research retries, 30s evaluation timeout. |
 | **Metacognition** | Monitors agent performance. Confidence calibration, failure pattern detection, workshop feedback loops, and self-modification via SOUL.md and skill updates. |
 
@@ -178,6 +190,21 @@ workshop_token_budget = 100000
 ```
 
 The agent can also introspect its own cognition via the `cognition` tool during conversations.
+
+---
+
+## Performance & Concurrency
+
+Hot-path characteristics per inbound turn:
+
+- **Parallel tool execution**: tool calls within one LLM round run via `Task.async_stream` with `max_concurrency: 5` and `ordered: true`. Multi-tool rounds finish in max(call latency) instead of sum.
+- **Single embedding per turn**: the user message is embedded once in `Context.Engine.assemble/4` and the result is threaded into both LTM (HybridSearch with `:query_embedding` opt) and MTM retrieval. HybridSearch no longer re-expands internally when a pre-expanded query list is provided.
+- **Cached tool schemas**: `Traitee.Tools.Registry.tool_schemas/0` memoizes the static portion in `:persistent_term`; `invalidate_static_cache/0` on config change.
+- **Cached cognition reads**: `UserModel.profile_summary/1` and `Workshop.pending_presentations/1` are 30s-cached to keep system-prompt builds cheap.
+- **Reminder dedup**: cognitive tool-reminder and active-task snapshot inject only on the first tool round, not every round.
+- **Tool-output truncation**: results >12KB are head+tail-summarized before re-feeding into subsequent rounds.
+- **Concurrency lanes** (`Traitee.Process.Lanes`): `llm:8`, `embed:4`, `tool:8` by default. `LLM.Router.complete/1` and `UserModel.observe/2` are lane-gated; `embed/1` runs HTTP in the caller's process (not serialized through the Router GenServer mailbox).
+- **Async persistence**: `Continuity.persist_session/2` runs in a supervised Task off the hot path.
 
 ---
 

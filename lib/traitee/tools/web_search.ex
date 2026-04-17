@@ -33,14 +33,39 @@ defmodule Traitee.Tools.WebSearch do
     }
   end
 
+  alias Traitee.Security.ToolOutputGuard
+
   @impl true
   def execute(%{"query" => query} = args) do
     num = args["num_results"] || 5
     config = Traitee.Config.get([:tools, :web_search]) || %{}
+    session_id = args["_session_id"]
 
-    case config[:provider] do
-      "searxng" -> search_searxng(query, num, config)
-      _ -> {:error, "No search provider configured. Set tools.web_search.provider in config."}
+    result =
+      case config[:provider] do
+        "searxng" ->
+          search_searxng(query, num, config)
+
+        _ ->
+          {:error, "No search provider configured. Set tools.web_search.provider in config."}
+      end
+
+    case result do
+      {:ok, body} ->
+        # Web results are attacker-controlled content. Scan for prompt
+        # injection, neutralize known conversation tokens, and wrap in an
+        # untrusted-external envelope before returning to the LLM.
+        safe =
+          ToolOutputGuard.scan_and_wrap(body,
+            session_id: session_id,
+            tool: "web_search",
+            source: :external
+          )
+
+        {:ok, safe}
+
+      err ->
+        err
     end
   end
 

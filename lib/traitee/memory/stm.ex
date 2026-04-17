@@ -71,13 +71,16 @@ defmodule Traitee.Memory.STM do
 
   @doc """
   Returns all messages in the STM buffer, ordered oldest to newest.
+
+  The underlying ETS table is `:ordered_set`, so `:ets.tab2list/1` already
+  returns entries in key order — the extra `Enum.sort_by/2` that used to
+  live here was redundant work on every context assembly.
   """
   def get_messages(stm_state) do
     %{table: table} = stm_state
 
     table
     |> :ets.tab2list()
-    |> Enum.sort_by(fn {k, _} -> k end)
     |> Enum.map(fn {_k, v} -> v end)
   end
 

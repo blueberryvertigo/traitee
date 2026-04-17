@@ -15,7 +15,11 @@ defmodule Traitee.Cognition.UserModel do
   @table :traitee_user_models
   @persist_interval_ms 60_000
 
-  defstruct models: %{}, dirty: MapSet.new()
+  defstruct models: %{}, dirty: MapSet.new(), observation_throttle: %{}
+
+  # One observation per owner per minute is sufficient to keep the interest
+  # graph current without pounding the LLM on rapid-fire messages.
+  @observe_interval_ms 60_000
 
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -94,17 +98,37 @@ defmodule Traitee.Cognition.UserModel do
 
   @impl true
   def handle_cast({:observe, owner_id, user_message, context_messages}, state) do
-    Task.start(fn ->
-      case Interest.extract(user_message, context_messages) do
-        {:ok, signals} ->
-          GenServer.cast(__MODULE__, {:merge_signals, owner_id, signals})
+    # Previously this spawned an unbounded `Task.start` per inbound message —
+    # a chatty user could pin the LLM provider with extraction calls that
+    # compete with user-facing traffic. We now:
+    #   1. Debounce: skip observation if the last one for this owner
+    #      happened within `@observe_interval_ms` — the interest signal is
+    #      low-frequency anyway; every message is overkill.
+    #   2. Lane-gate: run the extraction via the `:embed` concurrency lane
+    #      so it can't exceed the configured ceiling.
+    if should_observe?(state, owner_id) do
+      state = mark_observed(state, owner_id)
 
-        {:error, reason} ->
-          Logger.debug("Interest extraction failed: #{inspect(reason)}")
-      end
-    end)
+      Task.Supervisor.start_child(
+        Traitee.Delegation.TaskSupervisor,
+        fn ->
+          Traitee.Process.Lanes.with_lane(:embed, 30_000, fn ->
+            case Interest.extract(user_message, context_messages) do
+              {:ok, signals} ->
+                GenServer.cast(__MODULE__, {:merge_signals, owner_id, signals})
 
-    {:noreply, state}
+              {:error, reason} ->
+                Logger.debug("Interest extraction failed: #{inspect(reason)}")
+            end
+          end)
+        end,
+        restart: :temporary
+      )
+
+      {:noreply, state}
+    else
+      {:noreply, state}
+    end
   end
 
   @impl true
@@ -178,6 +202,18 @@ defmodule Traitee.Cognition.UserModel do
 
   # -- Private --
 
+  defp should_observe?(state, owner_id) do
+    last = Map.get(state.observation_throttle || %{}, owner_id, 0)
+    now = System.monotonic_time(:millisecond)
+    now - last > @observe_interval_ms
+  end
+
+  defp mark_observed(state, owner_id) do
+    now = System.monotonic_time(:millisecond)
+    throttle = Map.put(state.observation_throttle || %{}, owner_id, now)
+    %{state | observation_throttle: throttle}
+  end
+
   defp init_table do
     if :ets.whereis(@table) == :undefined do
       :ets.new(@table, [:named_table, :public, :set, read_concurrency: true])
@@ -197,7 +233,10 @@ defmodule Traitee.Cognition.UserModel do
   end
 
   defp merge_expertise(existing, new_signals) do
-    new_domains = Enum.map(new_signals, fn s -> %{domain: s["domain"], level: s["level"], evidence: s["evidence"]} end)
+    new_domains =
+      Enum.map(new_signals, fn s ->
+        %{domain: s["domain"], level: s["level"], evidence: s["evidence"]}
+      end)
 
     merged =
       (existing ++ new_domains)

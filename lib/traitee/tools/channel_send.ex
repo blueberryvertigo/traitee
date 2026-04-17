@@ -3,6 +3,8 @@ defmodule Traitee.Tools.ChannelSend do
 
   @behaviour Traitee.Tools.Tool
 
+  alias Traitee.Security.ToolGate
+
   require Logger
 
   @impl true
@@ -44,21 +46,8 @@ defmodule Traitee.Tools.ChannelSend do
     session_channels = args["_session_channels"] || %{}
     explicit_target = args["target"]
 
-    target = resolve_target(channel, explicit_target, session_channels)
-
-    case target do
-      nil ->
-        available = session_channels |> Map.keys() |> Enum.map_join(", ", &to_string/1)
-
-        {:error,
-         "No delivery target known for #{channel_str}. " <>
-           "The user needs to message me on #{channel_str} first, or provide a target ID. " <>
-           if(available != "",
-             do: "Known channels: #{available}",
-             else: "No channels connected yet."
-           )}
-
-      target_id ->
+    case resolve_target(channel, explicit_target, session_channels, args) do
+      {:ok, target_id} ->
         outbound = %{
           text: message,
           channel_type: channel,
@@ -74,6 +63,9 @@ defmodule Traitee.Tools.ChannelSend do
           {:error, reason} ->
             {:error, "Failed to send to #{channel_str}: #{inspect(reason)}"}
         end
+
+      {:error, reason} ->
+        {:error, reason}
     end
   rescue
     ArgumentError ->
@@ -82,24 +74,70 @@ defmodule Traitee.Tools.ChannelSend do
 
   def execute(_), do: {:error, "Missing required parameters: channel, message"}
 
-  defp resolve_target(_channel, explicit, _session_channels)
+  # Target resolution policy (previously far too permissive — would send to
+  # the configured owner's account on ANY configured channel even if the
+  # current session had no relationship with that channel, enabling
+  # cross-channel data exfiltration):
+  #
+  #   1. If the caller provides an explicit target, it MUST match a
+  #      sender_id / reply_to already known for that channel in this
+  #      session. If not, the send is refused.
+  #   2. Otherwise the stored session-channel target is used.
+  #   3. If no channel presence exists in this session, the send is
+  #      refused. Owner-level sends to previously-unseen channels now
+  #      require explicit owner-gated invocation.
+  defp resolve_target(channel, explicit, session_channels, args)
        when is_binary(explicit) and explicit != "" do
-    explicit
-  end
+    known = session_channel_identities(channel, session_channels)
 
-  defp resolve_target(channel, _explicit, session_channels) do
-    case Map.get(session_channels, channel) do
-      %{reply_to: reply_to} when not is_nil(reply_to) -> reply_to
-      %{sender_id: sender_id} when not is_nil(sender_id) -> sender_id
-      _ -> fallback_target(channel)
+    if explicit in known do
+      {:ok, explicit}
+    else
+      # Explicit targeting to an unknown recipient — only allowed from
+      # owner-authenticated sessions, since it otherwise enables
+      # cross-channel exfiltration.
+      case ToolGate.require_owner(args, "channel_send") do
+        :ok -> {:ok, explicit}
+        {:error, _} = err -> err
+      end
     end
   end
 
-  defp fallback_target(channel) do
-    case Traitee.Config.owner_id_for_channel(channel) do
-      nil -> nil
-      "" -> nil
-      id -> id
+  defp resolve_target(channel, _explicit, session_channels, _args) do
+    case Map.get(session_channels, channel) do
+      %{reply_to: reply_to} when not is_nil(reply_to) ->
+        {:ok, reply_to}
+
+      %{sender_id: sender_id} when not is_nil(sender_id) ->
+        {:ok, sender_id}
+
+      _ ->
+        available =
+          session_channels
+          |> Map.keys()
+          |> Enum.map_join(", ", &to_string/1)
+
+        hint =
+          if available == "",
+            do: "No channels connected yet.",
+            else: "Known channels: #{available}."
+
+        {:error,
+         "No delivery target known for #{channel}. " <>
+           "The user must message me on that channel first (session presence is required). " <>
+           hint}
+    end
+  end
+
+  defp session_channel_identities(channel, session_channels) do
+    case Map.get(session_channels, channel) do
+      nil ->
+        []
+
+      info ->
+        [info[:reply_to], info[:sender_id]]
+        |> Enum.reject(&(is_nil(&1) or &1 == ""))
+        |> Enum.map(&to_string/1)
     end
   end
 

@@ -25,23 +25,48 @@ defmodule Traitee.Process.LanesTest do
     end
 
     test "queues when lane is full" do
-      :ok = Lanes.acquire(:llm)
+      # Lane holders are tracked by pid, so the same process acquiring N
+      # times still counts as one holder. Spawn `max` worker tasks to
+      # fully saturate, then verify a further acquire is queued.
+      stats_before = Lanes.stats()
+      max = stats_before.tool.max
+      parent = self()
+
+      holders =
+        for _ <- 1..max do
+          pid =
+            spawn(fn ->
+              :ok = Lanes.acquire(:tool)
+              send(parent, {:acquired, self()})
+              # Block until the test tells us to release.
+              receive do
+                :release -> Lanes.release(:tool)
+              end
+            end)
+
+          assert_receive {:acquired, ^pid}, 2_000
+          pid
+        end
 
       waiter =
         Task.async(fn ->
-          Lanes.acquire(:llm, 5_000)
+          Lanes.acquire(:tool, 5_000)
         end)
 
       Process.sleep(50)
       stats = Lanes.stats()
-      assert stats.llm.active == 1
-      assert stats.llm.waiting >= 1
+      assert stats.tool.active == max
+      assert stats.tool.waiting >= 1
 
-      Lanes.release(:llm)
+      # Release ONE holder so the waiter can proceed.
+      send(hd(holders), :release)
 
       result = Task.await(waiter, 5_000)
       assert result == :ok
-      Lanes.release(:llm)
+
+      # Release remaining holders; waiter's slot cleans up when its
+      # Task process exits (DOWN monitor fires).
+      Enum.each(tl(holders), &send(&1, :release))
     end
   end
 

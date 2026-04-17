@@ -140,13 +140,17 @@ defmodule Traitee.Memory.LTM do
   @doc """
   Adds a fact linked to an entity.
   """
-  def add_fact(entity_id, content, fact_type, source_summary_id \\ nil) do
+  def add_fact(entity_id, content, fact_type, source_summary_id \\ nil, opts \\ []) do
+    confidence = Keyword.get(opts, :confidence, 1.0)
+
     %Fact{}
     |> Fact.changeset(%{
       entity_id: entity_id,
       content: content,
       fact_type: fact_type,
-      source_summary_id: source_summary_id
+      source_summary_id: source_summary_id,
+      confidence: confidence,
+      metadata: Keyword.get(opts, :metadata, %{})
     })
     |> Repo.insert()
   end
@@ -180,6 +184,67 @@ defmodule Traitee.Memory.LTM do
     Fact
     |> where([f], not is_nil(f.embedding))
     |> Repo.all()
+  end
+
+  @doc """
+  Reassigns all facts from one entity to another. Used by the Dream
+  consolidation cycle to merge duplicates without losing data. Avoids the
+  old copy+orphan pattern that left the duplicate in place and grew facts
+  exponentially on every cycle.
+  """
+  def reassign_facts(from_entity_id, to_entity_id) do
+    Fact
+    |> where([f], f.entity_id == ^from_entity_id)
+    |> Repo.update_all(set: [entity_id: to_entity_id])
+  end
+
+  @doc """
+  Reassigns all relations (both source and target) from one entity to another.
+  """
+  def reassign_relations(from_entity_id, to_entity_id) do
+    Relation
+    |> where([r], r.source_entity_id == ^from_entity_id)
+    |> Repo.update_all(set: [source_entity_id: to_entity_id])
+
+    Relation
+    |> where([r], r.target_entity_id == ^from_entity_id)
+    |> Repo.update_all(set: [target_entity_id: to_entity_id])
+  end
+
+  @doc """
+  Deletes an entity by id. Caller is responsible for reassigning or
+  deleting its facts/relations first, otherwise they'll orphan.
+  """
+  def delete_entity(entity_id) do
+    Entity
+    |> where([e], e.id == ^entity_id)
+    |> Repo.delete_all()
+  end
+
+  @doc """
+  Best-effort metadata write on an entity. Silently skips if the schema
+  lacks a metadata column so older DBs don't break.
+  """
+  def set_entity_metadata(entity_id, metadata) when is_map(metadata) do
+    case Repo.get(Entity, entity_id) do
+      nil ->
+        :ok
+
+      entity ->
+        if Map.has_key?(entity, :metadata) do
+          entity
+          |> Entity.changeset(%{metadata: metadata})
+          |> Repo.update()
+          |> case do
+            {:ok, _} -> :ok
+            {:error, _} -> :ok
+          end
+        else
+          :ok
+        end
+    end
+  rescue
+    _ -> :ok
   end
 
   # -- Graph Queries --

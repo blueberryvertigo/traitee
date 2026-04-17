@@ -122,20 +122,40 @@ defmodule Traitee.Security.Sandbox do
   @spec execute(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def execute(command, opts \\ []) do
     with :ok <- check_command(command, opts) do
-      if Docker.enabled?() do
-        case Docker.run(command, opts) do
-          {:ok, result} ->
-            {:ok, result}
+      cond do
+        Docker.enabled?() ->
+          # When Docker is enabled, it MUST isolate execution. A silent host
+          # fallback would turn a configuration error (or attacker-triggered
+          # daemon DoS) into a full-trust host shell. Fail closed instead.
+          case Docker.run(command, opts) do
+            {:ok, result} ->
+              {:ok, result}
 
-          {:error, {:docker_unavailable, _}} ->
-            Logger.warning("[Sandbox] Docker unavailable, falling back to host execution")
-            execute_host(command, opts)
+            {:error, {:docker_unavailable, reason}} ->
+              Logger.error(
+                "[Sandbox] Docker isolation is ENABLED but unavailable: #{inspect(reason)}. Refusing host fallback."
+              )
 
-          {:error, reason} ->
-            {:error, reason}
-        end
-      else
-        execute_host(command, opts)
+              {:error,
+               {:sandbox_unavailable,
+                "Docker isolation is enabled but the daemon is unreachable — refusing to execute on the host."}}
+
+            {:error, reason} ->
+              {:error, reason}
+          end
+
+        sandbox_enabled?() ->
+          # Sandbox mode is on but Docker is disabled — run on host with
+          # hardened env/CWD but warn the operator: this posture is weaker
+          # than intended.
+          Logger.warning(
+            "[Sandbox] sandbox_mode=true but docker.enabled=false — running on host without container isolation"
+          )
+
+          execute_host(command, opts)
+
+        true ->
+          execute_host(command, opts)
       end
     end
   end
@@ -180,9 +200,17 @@ defmodule Traitee.Security.Sandbox do
 
   defp maybe_exec_gate_command(command, opts) do
     case ExecGate.evaluate(command, opts) do
-      {:approve, _reason} -> :ok
-      {:warn, _reason} -> :ok
-      {:deny, reason} -> {:error, "Exec gate denied: #{reason}"}
+      {:approve, _reason} ->
+        :ok
+
+      {:warn, reason} ->
+        # :warn is still permitted but must be audited so operators can
+        # triage. The ExecGate module already logs + records to audit.
+        Logger.info("[Sandbox] Command warn: #{reason}")
+        :ok
+
+      {:deny, reason} ->
+        {:error, "Exec gate denied: #{reason}"}
     end
   end
 end

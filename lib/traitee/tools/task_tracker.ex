@@ -194,20 +194,42 @@ defmodule Traitee.Tools.TaskTracker do
   end
 
   @max_completed_age_ms 10 * 60 * 1_000
+  # Abandoned in_progress / pending tasks are pruned after 1 hour — a
+  # misbehaving LLM can otherwise leave "in_progress" tasks in context
+  # forever, since only completed/cancelled were previously pruned.
+  @max_stale_age_ms 60 * 60 * 1_000
 
-  @doc "Removes completed/cancelled tasks older than 10 minutes."
+  @doc "Removes completed/cancelled tasks older than 10 minutes, and stale pending/in_progress tasks older than 1 hour."
   def auto_prune(session_id) do
     now = DateTime.utc_now()
 
     list_tasks(session_id)
-    |> Enum.filter(fn t -> t.status in ["completed", "cancelled"] end)
     |> Enum.each(fn t ->
       age_ms = DateTime.diff(now, t.updated_at, :millisecond)
 
-      if age_ms > @max_completed_age_ms do
-        delete_task(session_id, t.id)
+      cond do
+        t.status in ["completed", "cancelled"] and age_ms > @max_completed_age_ms ->
+          delete_task(session_id, t.id)
+
+        t.status in ["pending", "in_progress"] and age_ms > @max_stale_age_ms ->
+          delete_task(session_id, t.id)
+
+        true ->
+          :ok
       end
     end)
+  rescue
+    _ -> :ok
+  end
+
+  @doc "Remove all tracked tasks for a session (call on Session.terminate/2)."
+  def clear(session_id) do
+    init()
+
+    list_tasks(session_id)
+    |> Enum.each(fn t -> delete_task(session_id, t.id) end)
+
+    :ok
   rescue
     _ -> :ok
   end

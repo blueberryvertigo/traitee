@@ -37,12 +37,18 @@ defmodule Traitee.Tools.Registry do
     :ok
   end
 
-  @doc "Returns tool schemas in OpenAI function-calling format."
+  @static_cache_key {__MODULE__, :static_schemas}
+
+  @doc """
+  Returns tool schemas in OpenAI function-calling format.
+
+  The static portion is cached in :persistent_term so the per-turn cost
+  is a single term lookup + a dynamic-list concat. Dynamic tools are
+  computed live (they change at runtime). Invalidate the cache via
+  `invalidate_static_cache/0` on config change.
+  """
   def tool_schemas do
-    static_schemas =
-      @tools
-      |> Enum.filter(&tool_enabled?/1)
-      |> Enum.map(&Traitee.Tools.Tool.to_schema/1)
+    static_schemas = cached_static_schemas()
 
     dynamic_schemas =
       list_dynamic()
@@ -50,6 +56,33 @@ defmodule Traitee.Tools.Registry do
       |> Enum.map(&Dynamic.to_schema/1)
 
     static_schemas ++ dynamic_schemas
+  end
+
+  defp cached_static_schemas do
+    case :persistent_term.get(@static_cache_key, :miss) do
+      :miss ->
+        schemas = compute_static_schemas()
+        :persistent_term.put(@static_cache_key, schemas)
+        schemas
+
+      schemas ->
+        schemas
+    end
+  end
+
+  defp compute_static_schemas do
+    @tools
+    |> Enum.filter(&tool_enabled?/1)
+    |> Enum.map(&Traitee.Tools.Tool.to_schema/1)
+  end
+
+  @doc """
+  Drop the cached static tool schema list. Call on config hot-reload
+  (`tools.*.enabled` changes).
+  """
+  def invalidate_static_cache do
+    _ = :persistent_term.erase(@static_cache_key)
+    :ok
   end
 
   @doc "Executes a tool by name with the given arguments."

@@ -136,7 +136,9 @@ defmodule Traitee.Tools.Dynamic do
 
   defp interpolate(template, args) do
     Enum.reduce(args, template, fn
-      {"_session_id", _}, acc ->
+      {"_" <> _rest, _}, acc ->
+        # Internal session-context args (_session_id, _session_channels,
+        # etc.) must never be interpolated into shell templates.
         acc
 
       {key, value}, acc ->
@@ -144,8 +146,53 @@ defmodule Traitee.Tools.Dynamic do
     end)
   end
 
+  # Cross-platform shell escaping. The previous implementation used POSIX
+  # single-quote escaping which cmd.exe does NOT honor, so on Windows an
+  # arg containing `&`, `|`, `%`, `^`, or `>` was treated as a metacharacter
+  # and became a command-injection primitive.
   defp shell_escape(str) do
+    if windows?() do
+      escape_cmd(str)
+    else
+      escape_posix(str)
+    end
+  end
+
+  defp escape_posix(str) do
     "'" <> String.replace(str, "'", "'\\''") <> "'"
+  end
+
+  # cmd.exe quoting is genuinely gnarly. We:
+  #   • reject embedded NUL and newlines outright,
+  #   • double-up embedded " as \" so quoting isn't broken,
+  #   • escape each cmd-shell metacharacter with ^,
+  #   • wrap in ".
+  # Known gotchas: `%VAR%` expansion inside double-quotes is not
+  # suppressible; we neutralize by replacing literal `%` with `^%`.
+  defp escape_cmd(str) do
+    if String.contains?(str, <<0>>) or String.contains?(str, "\n") do
+      raise ArgumentError, "shell argument contains NUL or newline"
+    end
+
+    escaped =
+      str
+      |> String.replace("\\", "\\\\")
+      |> String.replace(~s("), ~s(\\"))
+      |> String.replace("%", "^%")
+      |> String.replace("^", "^^")
+      |> String.replace("&", "^&")
+      |> String.replace("|", "^|")
+      |> String.replace("<", "^<")
+      |> String.replace(">", "^>")
+
+    ~s("#{escaped}")
+  end
+
+  defp windows? do
+    case :os.type() do
+      {:win32, _} -> true
+      _ -> false
+    end
   end
 
   defp truncate(output) do

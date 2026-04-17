@@ -23,12 +23,24 @@ defmodule Traitee.Memory.HybridSearch do
   - `:min_score` - minimum combined score threshold (default 0.0)
   - `:source_types` - filter to specific source types, e.g. `[:summary, :fact]`
   - `:diversity` - MMR diversity factor 0.0-1.0 (default 0.3, 0 = no diversity filtering)
+  - `:expanded_queries` - pre-expanded query list; when present `QueryExpansion`
+    is NOT re-run (prevents `Context.Engine` + `HybridSearch` double-expansion).
+  - `:query_embedding` - pre-computed embedding for the FIRST query; reused
+    instead of re-embedding per call. Let `Context.Engine` embed the user
+    message once per turn and thread the result through here.
   """
   def search(query, session_id, opts \\ []) do
     opts = Keyword.merge(@default_opts, opts)
 
-    expanded_queries = QueryExpansion.expand(query)
-    vector_results = expanded_vector_search(expanded_queries, opts)
+    expanded_queries =
+      case opts[:expanded_queries] do
+        list when is_list(list) and list != [] -> list
+        _ -> QueryExpansion.expand(query)
+      end
+
+    query_embedding = opts[:query_embedding]
+
+    vector_results = expanded_vector_search(expanded_queries, opts, query_embedding)
     text_results = expanded_keyword_search(expanded_queries, session_id)
 
     merged =
@@ -37,21 +49,36 @@ defmodule Traitee.Memory.HybridSearch do
     merged
     |> maybe_filter_types(opts[:source_types])
     |> Enum.filter(&(&1.score >= opts[:min_score]))
-    |> apply_diversity(opts[:limit], opts[:diversity])
     |> TemporalDecay.apply()
+    |> apply_diversity(opts[:limit], opts[:diversity])
     |> Enum.take(opts[:limit])
   end
 
-  defp expanded_vector_search(queries, opts) do
-    queries
-    |> Enum.flat_map(&vector_search(&1, opts))
-    |> dedupe_max_score()
+  # For the first (primary) expanded query we reuse a pre-computed embedding
+  # if one was passed in; for the rest we embed on demand. This halves the
+  # embedding round-trip count for typical 3-5-query expansions.
+  defp expanded_vector_search([_first | rest], opts, pre_embedding) when pre_embedding != nil do
+    head_results = vector_search_with_embedding(pre_embedding, opts)
+    tail_results = rest |> Enum.flat_map(&vector_search(&1, opts))
+
+    (head_results ++ tail_results) |> dedupe_max_score()
+  end
+
+  defp expanded_vector_search(queries, opts, _pre_embedding) do
+    queries |> Enum.flat_map(&vector_search(&1, opts)) |> dedupe_max_score()
   end
 
   defp expanded_keyword_search(queries, session_id) do
     queries
     |> Enum.flat_map(&keyword_search(&1, session_id))
     |> dedupe_max_score()
+  end
+
+  defp vector_search_with_embedding(embedding, opts) do
+    Vector.search(embedding, opts[:limit] * 3, min_score: opts[:min_score])
+    |> Enum.map(fn {source, id, score} ->
+      %{source: source, id: id, score: score, content: nil, timestamp: nil, embedding: nil}
+    end)
   end
 
   defp dedupe_max_score(results) do

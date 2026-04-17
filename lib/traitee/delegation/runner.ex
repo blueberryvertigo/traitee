@@ -15,7 +15,7 @@ defmodule Traitee.Delegation.Runner do
   alias Traitee.ActivityLog
   alias Traitee.Delegation.Progress
   alias Traitee.LLM.Router, as: LLMRouter
-  alias Traitee.Security.IOGuard
+  alias Traitee.Security.{IOGuard, Sanitizer, ThreatTracker, ToolOutputGuard}
   alias Traitee.Tools.Registry, as: ToolRegistry
 
   require Logger
@@ -113,6 +113,16 @@ defmodule Traitee.Delegation.Runner do
           {_, {:ok, {tag, {:error, reason}, duration}}} ->
             format_subagent_result(tag, "error", "Error: #{inspect(reason)}", duration, 0)
 
+          # Subagent Task crashed — `Task.yield_many` reports this as
+          # `{:exit, reason}` rather than `{:ok, _}` or `nil`. Without this
+          # clause the zip produced a `CaseClauseError` and the whole
+          # delegation returned no result, stranding the parent session's
+          # `delegations_expected` counter at +1 forever.
+          {_, {:exit, reason}} ->
+            tag = find_tag_for_task(tasks, async_task, async_tasks)
+            elapsed = System.monotonic_time(:millisecond) - started_at
+            format_subagent_result(tag, "crashed", inspect(reason), elapsed, 0)
+
           {_, nil} ->
             Task.shutdown(async_task, :brutal_kill)
             tag = find_tag_for_task(tasks, async_task, async_tasks)
@@ -155,21 +165,56 @@ defmodule Traitee.Delegation.Runner do
       tool_count: 0
     })
 
-    tools = filter_tools(tool_names)
+    # Inherit parent threat level. If the parent session is under attack
+    # (:high or :critical), downgrade the subagent's allowed tool set and
+    # depth accordingly rather than giving it a clean slate.
+    parent_level = safe_parent_level(session_id)
+    tools = filter_tools(tool_names, parent_level)
+    effective_max = max_calls_for_level(max_calls, parent_level)
+
+    # The task description was typed by the parent LLM from its context,
+    # which may have been seeded with attacker-controlled tool output.
+    # Run it through the sanitizer so blatant injection patterns are at
+    # least flagged/neutralized before the subagent executes.
+    sanitized_description = sanitize_description(description)
 
     budget_prompt =
       system_prompt <>
-        "\nYou have a budget of #{max_calls} tool call rounds. " <>
+        "\nYou have a budget of #{effective_max} tool call rounds. " <>
         "Plan your work to finish within this limit. " <>
         "When you're running low (1-2 rounds left), wrap up and return your best results."
 
     messages = [
       %{role: "system", content: budget_prompt},
-      %{role: "user", content: description}
+      %{role: "user", content: sanitized_description}
     ]
 
-    subagent_loop(messages, tools, %{depth: 0, tool_count: 0}, ctx)
+    subagent_loop(messages, tools, %{depth: 0, tool_count: 0}, %{ctx | max_calls: effective_max})
   end
+
+  defp safe_parent_level(nil), do: :normal
+
+  defp safe_parent_level(session_id) do
+    ThreatTracker.threat_level(session_id)
+  rescue
+    _ -> :normal
+  end
+
+  defp sanitize_description(description) when is_binary(description) do
+    case Sanitizer.sanitize(description) do
+      %{sanitized: text} -> text
+      _ -> description
+    end
+  rescue
+    _ -> description
+  end
+
+  defp sanitize_description(other), do: to_string(other)
+
+  defp max_calls_for_level(max_calls, :critical), do: min(max_calls, 3)
+  defp max_calls_for_level(max_calls, :high), do: min(max_calls, 5)
+  defp max_calls_for_level(max_calls, :elevated), do: min(max_calls, 10)
+  defp max_calls_for_level(max_calls, _), do: max_calls
 
   defp subagent_loop(messages, tools, progress, ctx) do
     %{tag: tag, max_calls: max_calls, quiet: quiet, session_id: session_id} = ctx
@@ -263,10 +308,14 @@ defmodule Traitee.Delegation.Runner do
         last_tool: tool_name
       })
 
+      # Tie subagent tools to the PARENT session_id so threat events surface
+      # to the parent's ThreatTracker. This prevents the LLM from spawning a
+      # subagent to launder attacks that would otherwise raise the parent's
+      # threat level.
       args_with_context =
-        Map.put(args, "_session_id", "subagent:#{tag}:#{session_id || "unknown"}")
+        Map.put(args, "_session_id", session_id || "subagent:#{tag}")
 
-      result = guarded_execute(tool_name, args_with_context)
+      result = guarded_execute(tool_name, args_with_context, session_id)
 
       %{
         role: "tool",
@@ -277,12 +326,13 @@ defmodule Traitee.Delegation.Runner do
     end)
   end
 
-  defp guarded_execute(name, args) do
+  defp guarded_execute(name, args, session_id) do
     case IOGuard.check_input(name, args) do
       :ok ->
         IOGuard.safe_execute(name, fn ->
           ToolRegistry.execute(name, args)
         end)
+        |> apply_output_guard(name, session_id)
         |> format_tool_result()
 
       {:error, reason} ->
@@ -290,29 +340,91 @@ defmodule Traitee.Delegation.Runner do
     end
   end
 
+  # Subagents now apply the same secret-scrubbing AND prompt-injection
+  # scanning as the parent session (previously: secrets-only, via IOGuard).
+  defp apply_output_guard({:ok, output}, name, session_id) when is_binary(output) do
+    scrubbed =
+      case IOGuard.check_output(name, output) do
+        {:clean, clean} -> clean
+        {:redacted, redacted, _types} -> redacted
+      end
+
+    %{output: safe} =
+      ToolOutputGuard.scan(scrubbed, session_id: session_id, tool: name, source: :tool)
+
+    {:ok, safe}
+  end
+
+  defp apply_output_guard(other, _name, _session_id), do: other
+
   defp format_tool_result({:ok, output}), do: output
   defp format_tool_result({:error, reason}), do: "Error: #{inspect(reason)}"
 
-  defp filter_tools(tool_names) when is_list(tool_names) do
-    all_schemas = ToolRegistry.tool_schemas()
+  # Tools denied to subagents:
+  #   • delegate_task   — recursion loop
+  #   • sessions        — pivot into another session to launder actions
+  #   • cron            — persistence beyond the subagent's turn
+  #   • workspace_edit  — self-modification; owner-only in the parent too
+  #   • skill_manage    — same
+  #   • channel_send    — cross-channel exfiltration
+  @subagent_denied_tools ~w(delegate_task sessions cron workspace_edit skill_manage channel_send)
 
+  defp filter_tools(tool_names, parent_level) when is_list(tool_names) do
+    all_schemas = ToolRegistry.tool_schemas()
     allowed = MapSet.new(tool_names)
+    denied = denied_tools_for(parent_level)
 
     Enum.filter(all_schemas, fn schema ->
       name = get_in(schema, ["function", "name"])
-      name != "delegate_task" and MapSet.member?(allowed, name)
+      name not in denied and MapSet.member?(allowed, name)
     end)
   end
 
-  defp filter_tools(_), do: []
+  defp filter_tools(_, _), do: []
+
+  # At :high / :critical parent threat levels, additionally strip memory
+  # writes and web calls so a compromised parent can't launder via a
+  # subagent.
+  defp denied_tools_for(:critical),
+    do: @subagent_denied_tools ++ ~w(memory web_search browser bash file)
+
+  defp denied_tools_for(:high),
+    do: @subagent_denied_tools ++ ~w(memory)
+
+  defp denied_tools_for(_), do: @subagent_denied_tools
+
+  # Subagent content must be treated as UNTRUSTED since it was produced by a
+  # separate LLM loop possibly influenced by attacker-controlled tool output.
+  # In addition to XML-escaping we:
+  #  • neutralize Traitee's own [SYS:xxxx] auth marker (subagents must never
+  #    forge authenticated system messages),
+  #  • neutralize conversation-token forms known to the Sanitizer,
+  #  • length-cap the content to prevent context-budget DoS.
+  @subagent_max_chars 32_000
+  @subagent_max_tag_chars 128
 
   defp format_subagent_result(tag, status, content, duration_ms, tool_calls) do
-    escaped_content = escape_xml(content || "")
-    escaped_tag = escape_xml(tag)
+    sanitized = neutralize_subagent_text(content || "")
+
+    capped =
+      if String.length(sanitized) > @subagent_max_chars do
+        String.slice(sanitized, 0, @subagent_max_chars) <>
+          "\n[TRUNCATED — subagent output too long]"
+      else
+        sanitized
+      end
+
+    escaped_content = escape_xml(capped)
+    escaped_tag = tag |> to_string() |> String.slice(0, @subagent_max_tag_chars) |> escape_xml()
 
     ~s[  <subagent tag="#{escaped_tag}" status="#{status}" duration_ms="#{duration_ms}" tool_calls="#{tool_calls}">\n] <>
       "    #{escaped_content}\n" <>
       "  </subagent>"
+  end
+
+  defp neutralize_subagent_text(str) do
+    %{output: neutralized} = ToolOutputGuard.scan(str, source: :subagent)
+    neutralized
   end
 
   defp escape_xml(str) do
@@ -321,6 +433,8 @@ defmodule Traitee.Delegation.Runner do
     |> String.replace("<", "&lt;")
     |> String.replace(">", "&gt;")
     |> String.replace("\"", "&quot;")
+    |> String.replace("'", "&apos;")
+    |> String.replace("\r", " ")
   end
 
   defp find_tag_for_task(tasks, async_task, async_tasks) do

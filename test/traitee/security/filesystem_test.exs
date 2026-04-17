@@ -79,12 +79,19 @@ defmodule Traitee.Security.FilesystemTest do
     end
   end
 
-  describe "check_path/2 with deny-by-default policy" do
-    test "denies arbitrary paths when no allow rules are configured" do
-      assert {:error, msg} =
-               Filesystem.check_path("/home/user/documents/notes.txt", operation: :read)
+  describe "check_path/2 with default read_only policy" do
+    test "allows reading arbitrary paths (default policy is read_only)" do
+      # Default policy outside sandbox_mode is :read_only — reads are allowed,
+      # writes are not. This is the intentional new default; explicit :deny
+      # must be configured to refuse reads.
+      assert :ok = Filesystem.check_path("/home/user/documents/notes.txt", operation: :read)
+    end
 
-      assert msg =~ "deny"
+    test "denies writes to arbitrary paths when no allow rules are configured" do
+      assert {:error, msg} =
+               Filesystem.check_path("/home/user/documents/notes.txt", operation: :write)
+
+      assert msg =~ "deny" or msg =~ "read-only"
     end
   end
 

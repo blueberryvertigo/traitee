@@ -24,7 +24,8 @@ defmodule Traitee.Security.CognitiveTest do
     end
 
     test "positional reminder at interval boundary", %{session: session} do
-      reminders = Cognitive.reminders_for(session, message_count: 8)
+      interval = Traitee.Config.get([:security, :cognitive, :reminder_interval]) || 8
+      reminders = Cognitive.reminders_for(session, message_count: interval)
       assert reminders != []
       assert hd(reminders).role == "system"
       assert String.contains?(hd(reminders).content, "[Cognitive Security]")

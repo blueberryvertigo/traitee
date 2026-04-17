@@ -47,55 +47,109 @@ defmodule Traitee.Tools.File do
 
   @impl true
   def execute(%{"operation" => op, "path" => path} = args) do
+    classify_operation_name = classify_operation_name(op)
     path = Path.expand(path)
     operation = classify_operation(op)
     session_id = args["_session_id"]
 
     with :ok <-
-           Sandbox.check_path(path, operation: operation, tool: "file", session_id: session_id) do
-      case op do
-        "read" -> read_file(path)
-        "write" -> write_file(path, args["content"] || "")
-        "append" -> append_file(path, args["content"] || "")
-        "list" -> list_dir(path)
-        "exists" -> {:ok, "#{File.exists?(path)}"}
-        _ -> {:error, "Unknown operation: #{op}"}
+           Sandbox.check_path(path,
+             operation: operation,
+             tool: "file",
+             session_id: session_id
+           ),
+         :ok <- refuse_if_symlink(path, operation) do
+      # TOCTOU guard: re-run the sandbox check AFTER any pre-operation
+      # (e.g. parent-directory creation) and immediately before the actual
+      # syscall, and ensure the target resolves to the same location as was
+      # originally validated. This catches attacker-planted symlinks that
+      # appear between the initial check and the open.
+      case classify_operation_name do
+        :read -> safe_read(path, operation, session_id)
+        :write -> safe_write(path, args["content"] || "", operation, session_id)
+        :append -> safe_append(path, args["content"] || "", operation, session_id)
+        :list -> list_dir(path)
+        :exists -> {:ok, "#{File.exists?(path)}"}
+        :unknown -> {:error, "Unknown operation: #{op}"}
       end
     end
   end
 
   def execute(_), do: {:error, "Missing required parameters: operation, path"}
 
+  defp classify_operation_name("read"), do: :read
+  defp classify_operation_name("write"), do: :write
+  defp classify_operation_name("append"), do: :append
+  defp classify_operation_name("list"), do: :list
+  defp classify_operation_name("exists"), do: :exists
+  defp classify_operation_name(_), do: :unknown
+
   defp classify_operation(op) when op in ["write", "append"], do: :write
   defp classify_operation(_), do: :read
 
-  defp read_file(path) do
-    case File.read(path) do
-      {:ok, content} ->
-        if String.length(content) > @max_read do
-          {:ok, String.slice(content, 0, @max_read) <> "\n... (truncated)"}
-        else
-          {:ok, content}
-        end
+  # Refuse to follow symlinks for any write operation. For reads, we allow
+  # symlinks but only after Sandbox.check_path has resolved every component
+  # and applied deny rules to the target.
+  defp refuse_if_symlink(path, :write) do
+    case File.read_link(path) do
+      {:ok, _target} ->
+        {:error, "Refusing to write through a symlink at #{path}"}
 
-      {:error, reason} ->
-        {:error, "Cannot read #{path}: #{reason}"}
+      {:error, _} ->
+        :ok
     end
   end
 
-  defp write_file(path, content) do
-    File.mkdir_p!(Path.dirname(path))
+  defp refuse_if_symlink(_path, _op), do: :ok
 
-    case File.write(path, content) do
-      :ok -> {:ok, "Written #{String.length(content)} bytes to #{path}"}
-      {:error, reason} -> {:error, "Cannot write #{path}: #{reason}"}
+  defp recheck_path(path, operation, session_id) do
+    Sandbox.check_path(path, operation: operation, tool: "file", session_id: session_id)
+  end
+
+  defp safe_read(path, operation, session_id) do
+    with :ok <- recheck_path(path, operation, session_id),
+         {:ok, content} <- File.read(path) do
+      if String.length(content) > @max_read do
+        {:ok, String.slice(content, 0, @max_read) <> "\n... (truncated)"}
+      else
+        {:ok, content}
+      end
+    else
+      {:error, reason} when is_atom(reason) -> {:error, "Cannot read #{path}: #{reason}"}
+      {:error, reason} -> {:error, reason}
     end
   end
 
-  defp append_file(path, content) do
-    case File.write(path, content, [:append]) do
-      :ok -> {:ok, "Appended #{String.length(content)} bytes to #{path}"}
-      {:error, reason} -> {:error, "Cannot append to #{path}: #{reason}"}
+  defp safe_write(path, content, operation, session_id) do
+    # Ensure the parent dir exists; the parent itself must pass the sandbox
+    # check as a write target (otherwise an attacker could force creation of
+    # directories outside the allowed subtree via mkdir_p walking up).
+    parent = Path.dirname(path)
+
+    with :ok <- recheck_path(parent, :write, session_id),
+         :ok <- File.mkdir_p(parent),
+         :ok <- refuse_if_symlink(path, :write),
+         :ok <- recheck_path(path, operation, session_id),
+         :ok <- File.write(path, content) do
+      {:ok, "Written #{String.length(content)} bytes to #{path}"}
+    else
+      {:error, reason} when is_atom(reason) -> {:error, "Cannot write #{path}: #{reason}"}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp safe_append(path, content, operation, session_id) do
+    parent = Path.dirname(path)
+
+    with :ok <- recheck_path(parent, :write, session_id),
+         :ok <- File.mkdir_p(parent),
+         :ok <- refuse_if_symlink(path, :write),
+         :ok <- recheck_path(path, operation, session_id),
+         :ok <- File.write(path, content, [:append]) do
+      {:ok, "Appended #{String.length(content)} bytes to #{path}"}
+    else
+      {:error, reason} when is_atom(reason) -> {:error, "Cannot append to #{path}: #{reason}"}
+      {:error, reason} -> {:error, reason}
     end
   end
 

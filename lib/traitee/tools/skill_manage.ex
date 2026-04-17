@@ -7,6 +7,7 @@ defmodule Traitee.Tools.SkillManage do
 
   @behaviour Traitee.Tools.Tool
 
+  alias Traitee.Security.ToolGate
   alias Traitee.Skills.Loader
 
   @impl true
@@ -63,35 +64,45 @@ defmodule Traitee.Tools.SkillManage do
   @impl true
   def execute(%{"action" => "create", "name" => name, "content" => content} = args)
       when is_binary(name) and is_binary(content) do
-    description = args["description"] || ""
-    meta = %{description: description}
-    Loader.create_skill(name, meta, content)
+    with :ok <- ToolGate.require_owner(args, "skill_manage") do
+      description = args["description"] || ""
+      meta = %{description: description}
+      Loader.create_skill(name, meta, content)
+    end
   end
 
   def execute(%{"action" => "create"}) do
     {:error, "Missing required parameters: name, content"}
   end
 
-  def execute(%{"action" => "patch", "name" => name, "old_string" => old, "new_string" => new})
+  def execute(
+        %{"action" => "patch", "name" => name, "old_string" => old, "new_string" => new} = args
+      )
       when is_binary(name) and is_binary(old) and is_binary(new) do
-    Loader.patch_skill(name, old, new)
+    with :ok <- ToolGate.require_owner(args, "skill_manage") do
+      Loader.patch_skill(name, old, new)
+    end
   end
 
   def execute(%{"action" => "patch"}) do
     {:error, "Missing required parameters: name, old_string, new_string"}
   end
 
-  def execute(%{"action" => "edit", "name" => name, "content" => content})
+  def execute(%{"action" => "edit", "name" => name, "content" => content} = args)
       when is_binary(name) and is_binary(content) do
-    Loader.update_skill(name, content)
+    with :ok <- ToolGate.require_owner(args, "skill_manage") do
+      Loader.update_skill(name, content)
+    end
   end
 
   def execute(%{"action" => "edit"}) do
     {:error, "Missing required parameters: name, content"}
   end
 
-  def execute(%{"action" => "delete", "name" => name}) when is_binary(name) do
-    Loader.delete_skill(name)
+  def execute(%{"action" => "delete", "name" => name} = args) when is_binary(name) do
+    with :ok <- ToolGate.require_owner(args, "skill_manage") do
+      Loader.delete_skill(name)
+    end
   end
 
   def execute(%{"action" => "delete"}) do

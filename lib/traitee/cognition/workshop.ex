@@ -97,7 +97,10 @@ defmodule Traitee.Cognition.Workshop do
 
   @impl true
   def handle_cast({:build_done, project_id}, state) do
-    completed = [project_id | state.completed]
+    # Previously `completed` grew unbounded. Keep a rolling window — the
+    # DB is the source of truth for completed projects; this list is just
+    # debug-ish state for :status queries.
+    completed = [project_id | state.completed] |> Enum.take(100)
     {:noreply, %{state | current_project: nil, completed: completed}}
   end
 
@@ -162,8 +165,33 @@ defmodule Traitee.Cognition.Workshop do
   end
 
   defp build_project(project_id) do
+    try do
+      do_build_project(project_id)
+    rescue
+      e ->
+        Logger.warning("[Workshop] Build crashed: #{inspect(e)}")
+        update_status(project_id, "ideating")
+    catch
+      :not_found -> :ok
+    after
+      # ALWAYS release the current_project lock, even on crash. Previously a
+      # crash between Repo.update and this cast left the Workshop wedged —
+      # current_project stuck non-nil forever, so no new builds ever ran.
+      GenServer.cast(__MODULE__, {:build_done, project_id})
+    end
+  end
+
+  defp do_build_project(project_id) do
     project = Repo.get(WorkshopProject, project_id)
     if project == nil, do: throw(:not_found)
+
+    # Idempotency: refuse to re-drive a project that has moved past the
+    # build phase. Without this guard, re-enqueueing (e.g. after a crash)
+    # would rebuild an already-ready / accepted project.
+    unless project.status in ["ideating", "researching", "building"] do
+      Logger.debug("[Workshop] Skipping #{project.name}: status=#{project.status}")
+      throw(:not_found)
+    end
 
     Logger.info("[Workshop] Building project: #{project.name} (#{project.project_type})")
     update_status(project_id, "researching")
@@ -185,9 +213,13 @@ defmodule Traitee.Cognition.Workshop do
         })
         |> Repo.update()
 
-        Logger.info("[Workshop] Project built, sending to QC: #{project.name}")
+        # Single review trigger: we broadcast the build_complete event on
+        # which the QC GenServer subscribes. Do NOT also call
+        # `QualityControl.review_project/1` synchronously — that created a
+        # double-review race where two concurrent Repo.updates fought over
+        # the same row with duplicate LLM cost.
+        Logger.info("[Workshop] Project built, awaiting QC: #{project.name}")
         broadcast(:build_complete, %{project: project.name, artifacts: artifacts})
-        Traitee.Cognition.QualityControl.review_project(project.id)
 
       {:error, reason} ->
         Logger.warning("[Workshop] Build failed for #{project.name}: #{inspect(reason)}")
@@ -201,14 +233,6 @@ defmodule Traitee.Cognition.Workshop do
 
         broadcast(:build_failed, %{project: project.name, reason: inspect(reason)})
     end
-
-    GenServer.cast(__MODULE__, {:build_done, project_id})
-  rescue
-    e ->
-      Logger.warning("[Workshop] Build crashed: #{inspect(e)}")
-      update_status(project_id, "ideating")
-  catch
-    :not_found -> :ok
   end
 
   defp research_phase(project) do
