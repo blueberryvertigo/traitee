@@ -29,25 +29,8 @@ defmodule Traitee.Tools.Dynamic do
 
     with :ok <-
            Sandbox.check_command(command, tool: "dynamic:#{tool_name}", session_id: session_id) do
-      env = Sandbox.scrubbed_env()
-
-      result =
-        if Docker.enabled?() do
-          case Docker.run(command, timeout_ms: @default_timeout, env: env, session_id: session_id) do
-            {:ok, r} ->
-              {:ok, r}
-
-            {:error, {:docker_unavailable, _}} ->
-              Executor.run(command, timeout_ms: @default_timeout, env: env)
-
-            other ->
-              other
-          end
-        else
-          Executor.run(command, timeout_ms: @default_timeout, env: env)
-        end
-
-      format_tool_result(result)
+      run_with_sandbox(command, session_id)
+      |> format_tool_result()
     end
   end
 
@@ -60,13 +43,7 @@ defmodule Traitee.Tools.Dynamic do
              tool: "dynamic:#{tool_name}",
              session_id: session_id
            ) do
-      command = build_script_command(path, args)
-
-      with :ok <-
-             Sandbox.check_command(command, tool: "dynamic:#{tool_name}", session_id: session_id) do
-        run_with_sandbox(command, session_id)
-        |> format_script_result()
-      end
+      run_script(path, tool_name, args, session_id)
     end
   end
 
@@ -84,14 +61,48 @@ defmodule Traitee.Tools.Dynamic do
     }
   end
 
-  defp build_script_command(path, args) do
-    json_args = Jason.encode!(args)
+  defp run_script(path, tool_name, args, session_id) do
+    args_file = write_args_file(args)
+
+    try do
+      command = build_script_command(path, args_file)
+
+      with :ok <-
+             Sandbox.check_command(command,
+               tool: "dynamic:#{tool_name}",
+               session_id: session_id
+             ) do
+        run_with_sandbox(command, session_id)
+        |> format_script_result()
+      end
+    after
+      File.rm(args_file)
+    end
+  end
+
+  # JSON args go to the script's stdin via a temp file instead of
+  # `echo <json> | ...` — shell-escaping JSON through cmd.exe mangles
+  # quotes/carets and delivers invalid JSON. `<` redirection works on
+  # both cmd.exe and sh.
+  defp write_args_file(args) do
+    path =
+      Path.join(
+        System.tmp_dir!(),
+        "traitee_tool_args_#{System.unique_integer([:positive])}.json"
+      )
+
+    File.write!(path, Jason.encode!(args))
+    path
+  end
+
+  defp build_script_command(path, args_file) do
+    redirect = " < #{shell_escape(args_file)}"
 
     case Path.extname(path) do
-      ".py" -> "echo #{shell_escape(json_args)} | python #{shell_escape(path)}"
-      ".sh" -> "echo #{shell_escape(json_args)} | bash #{shell_escape(path)}"
-      ".js" -> "echo #{shell_escape(json_args)} | node #{shell_escape(path)}"
-      _ -> "echo #{shell_escape(json_args)} | #{shell_escape(path)}"
+      ".py" -> "python #{shell_escape(path)}" <> redirect
+      ".sh" -> "bash #{shell_escape(path)}" <> redirect
+      ".js" -> "node #{shell_escape(path)}" <> redirect
+      _ -> shell_escape(path) <> redirect
     end
   end
 
@@ -99,12 +110,18 @@ defmodule Traitee.Tools.Dynamic do
     env = Sandbox.scrubbed_env()
 
     if Docker.enabled?() do
+      # Docker MUST isolate — if the daemon is unreachable we refuse
+      # rather than silently dropping the sandbox. A silent host
+      # fallback would let an attacker DoS Docker to gain full-trust
+      # shell access.
       case Docker.run(command, timeout_ms: @default_timeout, env: env, session_id: session_id) do
         {:ok, r} ->
           {:ok, r}
 
-        {:error, {:docker_unavailable, _}} ->
-          Executor.run(command, timeout_ms: @default_timeout, env: env)
+        {:error, {:docker_unavailable, reason}} ->
+          {:error,
+           {:sandbox_unavailable,
+            "Docker isolation is enabled but the daemon is unreachable: #{inspect(reason)}"}}
 
         other ->
           other
@@ -122,6 +139,9 @@ defmodule Traitee.Tools.Dynamic do
   defp format_tool_result({:error, :timeout}),
     do: {:error, "Tool timed out after #{@default_timeout}ms"}
 
+  defp format_tool_result({:error, {:sandbox_unavailable, msg}}),
+    do: {:error, "Sandbox unavailable: #{msg}"}
+
   defp format_tool_result({:error, reason}), do: {:error, "Tool failed: #{inspect(reason)}"}
 
   defp format_script_result({:ok, %{stdout: output, exit_code: 0}}), do: {:ok, truncate(output)}
@@ -131,6 +151,9 @@ defmodule Traitee.Tools.Dynamic do
 
   defp format_script_result({:error, :timeout}),
     do: {:error, "Script timed out after #{@default_timeout}ms"}
+
+  defp format_script_result({:error, {:sandbox_unavailable, msg}}),
+    do: {:error, "Sandbox unavailable: #{msg}"}
 
   defp format_script_result({:error, reason}), do: {:error, "Script failed: #{inspect(reason)}"}
 
@@ -165,7 +188,9 @@ defmodule Traitee.Tools.Dynamic do
   # cmd.exe quoting is genuinely gnarly. We:
   #   • reject embedded NUL and newlines outright,
   #   • double-up embedded " as \" so quoting isn't broken,
-  #   • escape each cmd-shell metacharacter with ^,
+  #   • escape each cmd-shell metacharacter with ^ — `^` itself FIRST,
+  #     so carets inserted by later replacements aren't doubled,
+  #   • do NOT touch backslashes (doubling them breaks Windows paths),
   #   • wrap in ".
   # Known gotchas: `%VAR%` expansion inside double-quotes is not
   # suppressible; we neutralize by replacing literal `%` with `^%`.
@@ -176,10 +201,9 @@ defmodule Traitee.Tools.Dynamic do
 
     escaped =
       str
-      |> String.replace("\\", "\\\\")
+      |> String.replace("^", "^^")
       |> String.replace(~s("), ~s(\\"))
       |> String.replace("%", "^%")
-      |> String.replace("^", "^^")
       |> String.replace("&", "^&")
       |> String.replace("|", "^|")
       |> String.replace("<", "^<")

@@ -5,6 +5,7 @@ defmodule Traitee.LLM.Anthropic do
 
   @behaviour Traitee.LLM.Provider
 
+  alias Traitee.LLM.SSE
   alias Traitee.LLM.Types.{CompletionRequest, CompletionResponse, ModelInfo}
 
   @api_base "https://api.anthropic.com/v1"
@@ -102,56 +103,65 @@ defmodule Traitee.LLM.Anthropic do
     model_id = resolve_model_id(request.model)
     thinking? = thinking_model?(request.model)
 
+    formatted_messages =
+      messages
+      |> Enum.map(&format_message/1)
+      |> merge_consecutive_roles()
+
     body =
       %{
         model: model_id,
-        messages: Enum.map(messages, &format_message/1),
+        messages: formatted_messages,
         max_tokens: request.max_tokens || if(thinking?, do: 8192, else: 4096),
         stream: true
       }
       |> maybe_put(:system, merged_system)
       |> maybe_put_thinking(thinking?)
       |> maybe_put(if(thinking?, do: :__skip__, else: :temperature), request.temperature)
+      |> maybe_put_tools(request.tools)
 
     req =
       build_req()
       |> Req.merge(
         url: "#{@api_base}/messages",
         json: body,
-        into: fn {:data, data}, acc ->
-          for line <- String.split(data, "\n", trim: true) do
-            case line do
-              "data: " <> json ->
-                case Jason.decode(json) do
-                  {:ok,
-                   %{
-                     "type" => "content_block_delta",
-                     "delta" => %{"type" => "text_delta", "text" => text}
-                   }} ->
-                    callback.(text)
-
-                  {:ok,
-                   %{"type" => "content_block_delta", "delta" => %{"type" => "thinking_delta"}}} ->
-                    :ok
-
-                  _ ->
-                    :ok
-                end
-
-              _ ->
-                :ok
-            end
-          end
-
-          {:cont, acc}
+        # No retries mid-stream: a transient retry would replay duplicate chunks.
+        retry: false,
+        into: fn {:data, data}, {req_acc, resp_acc} ->
+          buffer = Req.Response.get_private(resp_acc, :sse_buffer, "")
+          {lines, rest} = SSE.extract_lines(buffer <> data)
+          Enum.each(lines, &handle_stream_line(&1, callback))
+          {:cont, {req_acc, Req.Response.put_private(resp_acc, :sse_buffer, rest)}}
         end
       )
 
     case Req.post(req) do
-      {:ok, _resp} -> {:ok, %CompletionResponse{content: "", model: request.model}}
-      {:error, reason} -> {:error, {:stream_failed, reason}}
+      {:ok, %{status: 200}} ->
+        {:ok, %CompletionResponse{content: "", model: request.model}}
+
+      {:ok, %{status: status} = resp} ->
+        {:error, {:api_error, status, Req.Response.get_private(resp, :sse_buffer, "")}}
+
+      {:error, reason} ->
+        {:error, {:stream_failed, reason}}
     end
   end
+
+  defp handle_stream_line("data: " <> json, callback) do
+    case Jason.decode(json) do
+      {:ok,
+       %{
+         "type" => "content_block_delta",
+         "delta" => %{"type" => "text_delta", "text" => text}
+       }} ->
+        callback.(text)
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp handle_stream_line(_line, _callback), do: :ok
 
   @impl true
   def embed(_texts) do

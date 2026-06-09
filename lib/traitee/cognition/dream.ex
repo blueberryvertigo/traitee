@@ -13,7 +13,6 @@ defmodule Traitee.Cognition.Dream do
   """
   use GenServer
 
-  alias Traitee.ActivityLog
   alias Traitee.Cognition.{Interest, UserModel}
   alias Traitee.LLM.Router
   alias Traitee.Memory.LTM
@@ -24,6 +23,7 @@ defmodule Traitee.Cognition.Dream do
 
   @idle_check_ms 60_000
   @max_tokens_per_cycle 50_000
+  @curiosity_queue_max 50
 
   defstruct [
     :last_dream,
@@ -32,7 +32,9 @@ defmodule Traitee.Cognition.Dream do
     tokens_used: 0,
     curiosity_queue: :queue.new(),
     dream_log: [],
-    enabled: true
+    enabled: true,
+    dreaming: false,
+    curiosity_pending: false
   ]
 
   def start_link(opts \\ []) do
@@ -77,32 +79,53 @@ defmodule Traitee.Cognition.Dream do
 
   @impl true
   def handle_cast({:curiosity, topic, context}, state) do
-    item = %{topic: topic, context: context, queued_at: DateTime.utc_now()}
-    queue = :queue.in(item, state.curiosity_queue)
+    queue = enqueue_curiosity_item(state.curiosity_queue, topic, context)
     state = %{state | curiosity_queue: queue}
 
-    if :queue.len(queue) >= @curiosity_threshold and no_active_sessions?() and state.enabled do
+    trigger? =
+      :queue.len(queue) >= @curiosity_threshold and no_active_sessions?() and state.enabled and
+        not state.curiosity_pending and not state.dreaming
+
+    if trigger? do
       Logger.info(
         "[Dream] Curiosity threshold reached (#{:queue.len(queue)} topics) — triggering dream"
       )
 
       Process.send_after(self(), :curiosity_dream, 5_000)
+      {:noreply, %{state | curiosity_pending: true}}
+    else
+      {:noreply, state}
     end
-
-    {:noreply, state}
   end
 
   @impl true
   def handle_cast(:dream_now, state) do
-    state = run_dream_cycle(state)
-    {:noreply, state}
+    {:noreply, start_dream_cycle(state)}
+  end
+
+  # Cap the queue (drop oldest) and dedupe topics — previously the queue
+  # was unbounded and the same topic could pile up indefinitely.
+  defp enqueue_curiosity_item(queue, topic, context) do
+    if Enum.any?(:queue.to_list(queue), &(&1.topic == topic)) do
+      queue
+    else
+      item = %{topic: topic, context: context, queued_at: DateTime.utc_now()}
+      queue = :queue.in(item, queue)
+
+      if :queue.len(queue) > @curiosity_queue_max do
+        {_dropped, trimmed} = :queue.out(queue)
+        trimmed
+      else
+        queue
+      end
+    end
   end
 
   @impl true
   def handle_info(:idle_check, state) do
     state =
       if should_dream?(state) do
-        run_dream_cycle(state)
+        start_dream_cycle(state)
       else
         state
       end
@@ -128,7 +151,7 @@ defmodule Traitee.Cognition.Dream do
   def handle_info(:post_session_dream, state) do
     state =
       if no_active_sessions?() and state.enabled do
-        run_dream_cycle(state)
+        start_dream_cycle(state)
       else
         state
       end
@@ -138,14 +161,33 @@ defmodule Traitee.Cognition.Dream do
 
   @impl true
   def handle_info(:curiosity_dream, state) do
+    state = %{state | curiosity_pending: false}
+
     state =
       if no_active_sessions?() and state.enabled and :queue.len(state.curiosity_queue) > 0 do
-        run_dream_cycle(state)
+        start_dream_cycle(state)
       else
         state
       end
 
     {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:dream_cycle_done, result}, state) do
+    # Items enqueued while the cycle ran live in state.curiosity_queue;
+    # whatever the cycle didn't consume comes back in result.
+    queue = :queue.join(result.curiosity_queue, state.curiosity_queue)
+
+    {:noreply,
+     %{
+       state
+       | dreaming: false,
+         last_dream: result.last_dream,
+         tokens_used: result.tokens_used,
+         dream_log: result.dream_log,
+         curiosity_queue: queue
+     }}
   end
 
   @impl true
@@ -155,6 +197,7 @@ defmodule Traitee.Cognition.Dream do
   def handle_call(:status, _from, state) do
     summary = %{
       enabled: state.enabled,
+      dreaming: state.dreaming,
       last_dream: state.last_dream,
       curiosity_queue_size: :queue.len(state.curiosity_queue),
       tokens_used_last_cycle: state.tokens_used,
@@ -168,6 +211,7 @@ defmodule Traitee.Cognition.Dream do
 
   defp should_dream?(state) do
     state.enabled and
+      not state.dreaming and
       no_active_sessions?() and
       dream_interval_elapsed?(state)
   end
@@ -180,6 +224,32 @@ defmodule Traitee.Cognition.Dream do
 
   defp dream_interval_elapsed?(%{last_dream: last, dream_interval: interval}) do
     DateTime.diff(DateTime.utc_now(), last, :millisecond) >= interval
+  end
+
+  # Run the (long, multi-LLM-call) cycle in a Task so the Dream GenServer
+  # stays responsive — previously status/0 timed out while dreaming and
+  # casts queued up behind the cycle. Results merge back via
+  # {:dream_cycle_done, result}; `dreaming` prevents overlapping cycles.
+  defp start_dream_cycle(%{dreaming: true} = state), do: state
+
+  defp start_dream_cycle(state) do
+    server = self()
+
+    Task.start(fn ->
+      result =
+        try do
+          run_dream_cycle(state)
+        rescue
+          e ->
+            Logger.warning("[Dream] Dream cycle crashed: #{inspect(e)}")
+            %{state | last_dream: DateTime.utc_now()}
+        end
+
+      send(server, {:dream_cycle_done, result})
+    end)
+
+    # Hand the queue to the cycle; new items accumulate in a fresh queue.
+    %{state | dreaming: true, curiosity_queue: :queue.new()}
   end
 
   defp run_dream_cycle(state) do
@@ -223,7 +293,7 @@ defmodule Traitee.Cognition.Dream do
       Logger.debug("[Dream] Consolidation: scanning for duplicates and orphans")
 
       consolidate_duplicate_entities()
-      connect_orphaned_entities(state)
+      state = connect_orphaned_entities(state)
       score_entity_importance()
 
       state
@@ -284,7 +354,7 @@ defmodule Traitee.Cognition.Dream do
       |> Enum.take(5)
 
     if orphans != [] and budget_remaining?(state) do
-      names = Enum.map(orphans, & &1.name) |> Enum.join(", ")
+      names = Enum.map_join(orphans, ", ", & &1.name)
 
       all_names =
         entities
@@ -305,12 +375,15 @@ defmodule Traitee.Cognition.Dream do
       """
 
       case complete_with_budget(prompt, state) do
-        {:ok, content, _tokens} ->
+        {:ok, content, tokens} ->
           parse_and_store_relations(content)
+          %{state | tokens_used: state.tokens_used + tokens}
 
         _ ->
-          :ok
+          state
       end
+    else
+      state
     end
   end
 
@@ -694,17 +767,25 @@ defmodule Traitee.Cognition.Dream do
     _ -> :ok
   end
 
-  defp gather_recent_activity do
-    sessions = Session.list_active()
+  # Dreams only run when NO sessions are active, so reading the activity
+  # log via Session.list_active() always returned nothing and reflection
+  # was unreachable. Scan the ActivityLog ETS table directly instead —
+  # it retains recent entries for ended sessions.
+  @activity_log_table :traitee_activity_log
 
-    sessions
-    |> Enum.flat_map(fn {sid, _pid} ->
-      ActivityLog.recent(sid, 20)
-    end)
-    |> Enum.take(50)
-    |> Enum.map_join("\n", fn entry ->
-      "#{entry.type}: #{inspect(Map.drop(entry, [:type, :session_id]))}"
-    end)
+  defp gather_recent_activity do
+    if :ets.whereis(@activity_log_table) == :undefined do
+      ""
+    else
+      @activity_log_table
+      |> :ets.tab2list()
+      |> Enum.map(fn {_key, entry} -> entry end)
+      |> Enum.sort_by(& &1.id, :desc)
+      |> Enum.take(50)
+      |> Enum.map_join("\n", fn entry ->
+        "#{entry.event_type}: #{inspect(Map.drop(entry, [:event_type, :session_id]))}"
+      end)
+    end
   rescue
     _ -> ""
   end

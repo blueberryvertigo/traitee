@@ -64,15 +64,27 @@ defmodule Traitee.Context.BudgetTest do
   end
 
   describe "reallocate/3" do
-    test "moves surplus from one slot to another" do
+    test "moves exactly the unused surplus, reading usage under the bare slot key" do
       budget = Budget.allocate("openai/gpt-4o", "Sys.", "Hi!")
       budget = Budget.record_usage(budget, :ltm, 100)
       original_stm = budget.stm_budget
       original_ltm = budget.ltm_budget
+      assert original_ltm > 100
 
       budget = Budget.reallocate(budget, :ltm_budget, :stm_budget)
-      assert budget.stm_budget > original_stm
-      assert budget.ltm_budget < original_ltm
+      surplus = original_ltm - 100
+      assert budget.ltm_budget == 100
+      assert budget.stm_budget == original_stm + surplus
+    end
+
+    test "moves the full allocation when no usage was recorded" do
+      budget = Budget.allocate("openai/gpt-4o", "Sys.", "Hi!")
+      original_stm = budget.stm_budget
+      original_ltm = budget.ltm_budget
+
+      budget = Budget.reallocate(budget, :ltm_budget, :stm_budget)
+      assert budget.ltm_budget == 0
+      assert budget.stm_budget == original_stm + original_ltm
     end
 
     test "no-op when slot is fully used" do
@@ -82,7 +94,8 @@ defmodule Traitee.Context.BudgetTest do
       original_stm = budget.stm_budget
 
       budget = Budget.reallocate(budget, :ltm_budget, :stm_budget)
-      assert budget.stm_budget >= original_stm
+      assert budget.stm_budget == original_stm
+      assert budget.ltm_budget == ltm_allocated
     end
   end
 
@@ -128,7 +141,7 @@ defmodule Traitee.Context.BudgetTest do
   end
 
   describe "fit_within/2" do
-    test "fits items within token budget" do
+    test "halts at the first item that does not fit (no mid-list holes)" do
       items = [
         %{content: "short", token_count: 10},
         %{content: "medium length text", token_count: 50},
@@ -136,7 +149,8 @@ defmodule Traitee.Context.BudgetTest do
       ]
 
       result = Budget.fit_within(items, 35)
-      assert length(result) == 2
+      assert length(result) == 1
+      assert hd(result).content == "short"
     end
 
     test "returns empty for zero budget" do

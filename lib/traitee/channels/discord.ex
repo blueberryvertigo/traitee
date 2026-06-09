@@ -9,9 +9,12 @@ defmodule Traitee.Channels.Discord do
   use GenServer
 
   alias Traitee.Channels.Channel
+  alias Traitee.Channels.Splitter
   alias Traitee.Router, as: MessageRouter
 
   require Logger
+
+  @message_limit 2000
 
   defstruct [:token, :guild_ids, :allow_dms]
 
@@ -55,8 +58,8 @@ defmodule Traitee.Channels.Discord do
 
     state = %__MODULE__{
       token: token,
-      guild_ids: config[:guild_ids] || [],
-      allow_dms: config[:allow_dms] || true
+      guild_ids: Enum.map(config[:guild_ids] || [], &to_string/1),
+      allow_dms: Map.get(config, :allow_dms, true)
     }
 
     {:ok, state}
@@ -64,20 +67,12 @@ defmodule Traitee.Channels.Discord do
 
   @impl true
   def handle_call({:send, %{target: channel_id, text: text}}, _from, state) do
-    result =
-      try do
-        Nostrum.Api.Message.create(String.to_integer(channel_id), content: text)
-        :ok
-      rescue
-        e -> {:error, e}
-      end
-
-    {:reply, result, state}
+    {:reply, send_text(channel_id, text), state}
   end
 
   @impl true
   def handle_info({:nostrum_message, message}, state) do
-    unless message.author.bot do
+    if allowed_message?(message, state) do
       inbound =
         Channel.build_inbound(
           message.content,
@@ -98,12 +93,52 @@ defmodule Traitee.Channels.Discord do
   @impl true
   def handle_info(_msg, state), do: {:noreply, state}
 
+  defp allowed_message?(message, state) do
+    cond do
+      message.author.bot -> false
+      is_nil(message.guild_id) -> state.allow_dms
+      state.guild_ids == [] -> true
+      true -> to_string(message.guild_id) in state.guild_ids
+    end
+  end
+
+  defp send_text(channel_id, text) do
+    text
+    |> Splitter.split_message(@message_limit)
+    |> Enum.reduce_while(:ok, fn part, :ok ->
+      case create_message(channel_id, part) do
+        :ok -> {:cont, :ok}
+        error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp create_message(channel_id, content) do
+    case Nostrum.Api.Message.create(to_channel_id(channel_id), content: content) do
+      {:ok, _message} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("Discord send failed: #{inspect(reason)}")
+        {:error, reason}
+    end
+  rescue
+    e ->
+      Logger.warning("Discord send failed: #{inspect(e)}")
+      {:error, e}
+  end
+
+  defp to_channel_id(id) when is_integer(id), do: id
+  defp to_channel_id(id) when is_binary(id), do: String.to_integer(id)
+
   defp start_consumer do
     Task.start(fn ->
-      try do
-        Application.ensure_all_started(:nostrum)
-      rescue
-        e -> Logger.warning("Failed to start Nostrum: #{inspect(e)}")
+      case Application.ensure_all_started(:nostrum) do
+        {:ok, _started} ->
+          :ok
+
+        {:error, reason} ->
+          Logger.warning("Failed to start Nostrum: #{inspect(reason)}")
       end
     end)
   end

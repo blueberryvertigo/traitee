@@ -56,6 +56,20 @@ defmodule Traitee.ActivityLog do
     _ -> :ok
   end
 
+  @doc """
+  Removes all entries for a session. Called from `Session.Server.terminate/2`
+  so per-session entries don't persist forever after the session ends.
+  """
+  def clear(session_id) do
+    if :ets.whereis(@table) != :undefined do
+      :ets.select_delete(@table, [{{{session_id, :_}, :_}, [], [true]}])
+    end
+
+    :ok
+  rescue
+    _ -> :ok
+  end
+
   @doc "Returns the most recent N entries for a session."
   def recent(session_id, limit \\ 20) do
     if :ets.whereis(@table) == :undefined do

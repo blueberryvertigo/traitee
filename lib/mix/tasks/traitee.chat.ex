@@ -13,6 +13,7 @@ defmodule Mix.Tasks.Traitee.Chat do
   alias Traitee.AutoReply.CommandRegistry
   alias Traitee.CLI.Display
   alias Traitee.Context.StatusBar
+  alias Traitee.Memory.Compactor
   alias Traitee.Session
   alias Traitee.Session.Server, as: SessionServer
   alias Traitee.Tools.TaskTracker
@@ -40,7 +41,7 @@ defmodule Mix.Tasks.Traitee.Chat do
     session_id = opts[:session] || default_session_id()
     {:ok, pid} = Session.ensure_started(session_id, :cli)
 
-    Phoenix.PubSub.subscribe(Traitee.PubSub, Traitee.Memory.Compactor.topic(session_id))
+    Phoenix.PubSub.subscribe(Traitee.PubSub, Compactor.topic(session_id))
 
     IO.puts(Display.chat_banner(session_id))
     loop(session_id, pid, opts)
@@ -104,14 +105,15 @@ defmodule Mix.Tasks.Traitee.Chat do
   defp print_status_bar(pid) do
     state = SessionServer.get_state(pid)
 
-    status_data = StatusBar.from_session(%{
-      model: state.model,
-      budget: state.last_budget,
-      stm_count: state.stm_size,
-      stm_capacity: state.stm_capacity,
-      session_start: state.created_at,
-      compaction_state: state.compaction_state
-    })
+    status_data =
+      StatusBar.from_session(%{
+        model: state.model,
+        budget: state.last_budget,
+        stm_count: state.stm_size,
+        stm_capacity: state.stm_capacity,
+        session_start: state.created_at,
+        compaction_state: state.compaction_state
+      })
 
     IO.write(StatusBar.render_ansi(status_data))
     IO.puts("")
@@ -141,11 +143,11 @@ defmodule Mix.Tasks.Traitee.Chat do
   end
 
   defp handle_command("/new" <> _, old_session_id, _old_pid, _opts) do
-    Phoenix.PubSub.unsubscribe(Traitee.PubSub, Traitee.Memory.Compactor.topic(old_session_id))
+    Phoenix.PubSub.unsubscribe(Traitee.PubSub, Compactor.topic(old_session_id))
     Session.terminate(old_session_id)
     new_session_id = default_session_id()
     {:ok, new_pid} = Session.ensure_started(new_session_id, :cli)
-    Phoenix.PubSub.subscribe(Traitee.PubSub, Traitee.Memory.Compactor.topic(new_session_id))
+    Phoenix.PubSub.subscribe(Traitee.PubSub, Compactor.topic(new_session_id))
     IO.puts(Display.system_msg("Conversation reset."))
     {new_session_id, new_pid}
   end
@@ -166,7 +168,7 @@ defmodule Mix.Tasks.Traitee.Chat do
       |> Enum.take(-5)
       |> Enum.each(fn %{threat: t} ->
         IO.puts(
-          "  #{IO.ANSI.faint()}[#{t.severity}] #{t.pattern_name} — #{t.category}#{IO.ANSI.reset()}"
+          "  #{IO.ANSI.faint()}[#{t.severity}] #{t.pattern_name} â€” #{t.category}#{IO.ANSI.reset()}"
         )
       end)
     end
@@ -195,7 +197,7 @@ defmodule Mix.Tasks.Traitee.Chat do
 
       Enum.each(tagged_reminders, fn r ->
         preview = String.slice(r.content, 0, 150)
-        IO.puts("  #{IO.ANSI.faint()}#{IO.ANSI.yellow()}→ #{preview}...#{IO.ANSI.reset()}")
+        IO.puts("  #{IO.ANSI.faint()}#{IO.ANSI.yellow()}â†’ #{preview}...#{IO.ANSI.reset()}")
       end)
     else
       IO.puts("")
@@ -213,7 +215,8 @@ defmodule Mix.Tasks.Traitee.Chat do
 
     IO.puts(
       Display.format_help(
-        help <> "\n/threats — Show threat level and recent events\n/quit — Exit the REPL" <>
+        help <>
+          "\n/threats â€” Show threat level and recent events\n/quit â€” Exit the REPL" <>
           "\n\nContext status bar is shown after each response."
       )
     )
@@ -257,7 +260,7 @@ defmodule Mix.Tasks.Traitee.Chat do
       @progress_timeout ->
         if has_active_tasks?(session_id) do
           IO.puts(
-            "#{IO.ANSI.faint()}#{IO.ANSI.blue()}  ⏳ Tasks in progress, still waiting...#{IO.ANSI.reset()}"
+            "#{IO.ANSI.faint()}#{IO.ANSI.blue()}  â³ Tasks in progress, still waiting...#{IO.ANSI.reset()}"
           )
 
           await_streaming_response(ref, mon, session_id)
@@ -286,7 +289,7 @@ defmodule Mix.Tasks.Traitee.Chat do
           IO.puts(
             Display.system_msg(
               "Subagent results received (#{length(results)}/#{total}). " <>
-                "Results are in context — ask me about them."
+                "Results are in context â€” ask me about them."
             )
           )
 

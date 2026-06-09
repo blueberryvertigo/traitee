@@ -15,7 +15,11 @@ defmodule Traitee.Tools.TaskTracker do
 
   def init do
     if :ets.whereis(@table) == :undefined do
-      :ets.new(@table, [:named_table, :bag, :public, read_concurrency: true])
+      # :set, not :bag — keys are unique by design ({session_id, id}),
+      # and :set makes :ets.insert an atomic replace. With :bag, a
+      # concurrent delete→insert pair could leave duplicate objects
+      # under one key, breaking get_task's single-object match.
+      :ets.new(@table, [:named_table, :set, :public, read_concurrency: true])
     end
 
     :ok
@@ -82,7 +86,6 @@ defmodule Traitee.Tools.TaskTracker do
         updated_at: now
       }
 
-      delete_task(session_id, id)
       :ets.insert(@table, {{session_id, id}, task})
 
       {:ok, "Task added: [#{status}] #{id} — #{content}"}
@@ -106,7 +109,6 @@ defmodule Traitee.Tools.TaskTracker do
 
         task ->
           updated = %{task | status: status, updated_at: DateTime.utc_now()}
-          delete_task(session_id, id)
           :ets.insert(@table, {{session_id, id}, updated})
 
           {:ok, "Task updated: [#{status}] #{id} — #{task.content}"}
@@ -218,6 +220,31 @@ defmodule Traitee.Tools.TaskTracker do
           :ok
       end
     end)
+  rescue
+    _ -> :ok
+  end
+
+  @default_prune_age_ms 24 * 60 * 60 * 1_000
+
+  @doc """
+  Table-wide prune: removes any task whose updated_at is older than
+  `max_age_ms` (default: 24h), regardless of session liveness. Called
+  periodically by `Traitee.Delegation.ProgressReaper` so entries for
+  crashed sessions don't leak forever.
+  """
+  def prune_stale(max_age_ms \\ @default_prune_age_ms) do
+    if :ets.whereis(@table) != :undefined do
+      now = DateTime.utc_now()
+
+      :ets.tab2list(@table)
+      |> Enum.each(fn {key, task} ->
+        if DateTime.diff(now, task.updated_at, :millisecond) > max_age_ms do
+          :ets.delete(@table, key)
+        end
+      end)
+    end
+
+    :ok
   rescue
     _ -> :ok
   end

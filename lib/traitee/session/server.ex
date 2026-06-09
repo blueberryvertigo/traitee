@@ -15,6 +15,7 @@ defmodule Traitee.Session.Server do
   alias IO.ANSI
   alias Traitee.ActivityLog
   alias Traitee.CLI.Display
+  alias Traitee.Cognition.{UserModel, Workshop}
   alias Traitee.Context.{Continuity, Engine}
   alias Traitee.LLM.Router, as: LLMRouter
   alias Traitee.Memory.Compactor
@@ -55,6 +56,9 @@ defmodule Traitee.Session.Server do
     # Cleared at the end of each `process_message`.
     inter_session_depth: 0
   ]
+
+  # Most-recent delegation results retained for callers that never pop them.
+  @max_delegation_results 10
 
   def start_link(opts) do
     session_id = Keyword.fetch!(opts, :session_id)
@@ -128,6 +132,12 @@ defmodule Traitee.Session.Server do
 
   @impl true
   def init(opts) do
+    # Trap exits so terminate/2 runs on supervised shutdown (final compaction,
+    # STM table destruction, per-session ETS cleanup). Linked tool tasks then
+    # deliver {:EXIT, pid, reason} messages, which the catch-all handle_info
+    # below intentionally swallows.
+    Process.flag(:trap_exit, true)
+
     session_id = Keyword.fetch!(opts, :session_id)
     channel = Keyword.fetch!(opts, :channel)
 
@@ -259,8 +269,21 @@ defmodule Traitee.Session.Server do
         channel: :internal
       )
 
-    results = state.delegation_results ++ [safe_result]
+    # Cap accumulated results — only the CLI pops them; other channels would
+    # otherwise grow this list unboundedly across the session's lifetime.
+    results = Enum.take(state.delegation_results ++ [safe_result], -@max_delegation_results)
     {:noreply, %{state | stm_state: stm_state, delegation_results: results}}
+  end
+
+  @impl true
+  def handle_info({:workshop_presentations, projects}, state) do
+    # Pushed from the init-time fetch task. STM pushes happen here, in the
+    # session process, so the returned stm_state (with its bumped counter)
+    # threads back into state — pushing from the task used a stale counter
+    # snapshot and silently overwrote entries. mark_presented runs only
+    # AFTER the push so presentations are never lost.
+    state = Enum.reduce(projects, state, &push_workshop_presentation/2)
+    {:noreply, state}
   end
 
   @impl true
@@ -284,6 +307,7 @@ defmodule Traitee.Session.Server do
     safe_clear(fn -> Canary.clear(state.session_id) end)
     safe_clear(fn -> ThreatTracker.clear(state.session_id) end)
     safe_clear(fn -> TaskTracker.clear(state.session_id) end)
+    safe_clear(fn -> ActivityLog.clear(state.session_id) end)
 
     Phoenix.PubSub.broadcast(
       Traitee.PubSub,
@@ -427,6 +451,8 @@ defmodule Traitee.Session.Server do
               end
             end)
 
+            observe_user_model(state, sanitized_text)
+
             {{:ok, response_text}, state}
 
           {:error, reason} ->
@@ -502,7 +528,7 @@ defmodule Traitee.Session.Server do
   end
 
   defp run_completion_loop(messages, tools, depth, state, notify, max_depth) do
-    if depth > max_depth do
+    if depth >= max_depth do
       {:ok,
        "I got carried away with tools there. Could you rephrase your question? I'll try to answer directly."}
     else
@@ -549,24 +575,7 @@ defmodule Traitee.Session.Server do
              "I've dispatched subagents to work on this#{if tags != "", do: ": #{tags}", else: ""}. " <>
                "Results will arrive shortly."}
           else
-            # Inject the "treat tool output as untrusted" reminder + active
-            # task summary ONCE — the first time we enter a tool round in
-            # this turn. Previously this was re-appended every round, so
-            # after 10 rounds the prompt carried 10 copies of the same
-            # reminder and 10 task snapshots.
-            sys_injections =
-              if depth == 0 do
-                tool_reminder =
-                  if Cognitive.enabled?(), do: [Cognitive.tool_reminder()], else: []
-
-                task_reminder = build_task_reminder(state.session_id)
-
-                (tool_reminder ++ task_reminder)
-                |> Enum.map(&SystemAuth.tag_message(&1, state.session_id))
-              else
-                []
-              end
-
+            sys_injections = first_round_injections(depth, state)
             trimmed_results = maybe_summarize_tool_results(tool_results, state)
 
             updated_messages =
@@ -586,6 +595,19 @@ defmodule Traitee.Session.Server do
       end
     end
   end
+
+  # Inject the "treat tool output as untrusted" reminder + active task
+  # summary ONCE — the first time we enter a tool round in this turn.
+  # Previously this was re-appended every round, so after 10 rounds the
+  # prompt carried 10 copies of the same reminder and 10 task snapshots.
+  defp first_round_injections(0, state) do
+    tool_reminder = if Cognitive.enabled?(), do: [Cognitive.tool_reminder()], else: []
+    task_reminder = build_task_reminder(state.session_id)
+
+    Enum.map(tool_reminder ++ task_reminder, &SystemAuth.tag_message(&1, state.session_id))
+  end
+
+  defp first_round_injections(_depth, _state), do: []
 
   defp guard_intermediate_content(_session_id, nil), do: nil
 
@@ -617,20 +639,38 @@ defmodule Traitee.Session.Server do
     Enum.map(results, fn
       %{content: content} = msg
       when is_binary(content) and byte_size(content) > @tool_result_char_cap ->
-        truncated =
-          String.slice(content, 0, @tool_result_head) <>
-            "\n... [#{byte_size(content) - @tool_result_head - @tool_result_tail} bytes omitted — tool output was too large to include in full] ...\n" <>
-            String.slice(
-              content,
-              max(byte_size(content) - @tool_result_tail, 0),
-              @tool_result_tail
-            )
-
-        %{msg | content: truncated}
+        %{msg | content: truncate_tool_content(content)}
 
       msg ->
         msg
     end)
+  end
+
+  # Byte-based truncation with offsets backed up to valid UTF-8 boundaries —
+  # String.slice takes grapheme offsets, so mixing it with byte_size
+  # thresholds misaligned the head/tail slices on multibyte output.
+  defp truncate_tool_content(content) do
+    head_end = utf8_boundary(content, @tool_result_head)
+    tail_start = utf8_boundary(content, byte_size(content) - @tool_result_tail)
+    omitted = tail_start - head_end
+
+    binary_part(content, 0, head_end) <>
+      "\n... [#{omitted} bytes omitted — tool output was too large to include in full] ...\n" <>
+      binary_part(content, tail_start, byte_size(content) - tail_start)
+  end
+
+  # Walks an offset backwards past UTF-8 continuation bytes (0b10xxxxxx) so a
+  # binary_part cut never lands mid-codepoint.
+  defp utf8_boundary(_bin, offset) when offset <= 0, do: 0
+
+  defp utf8_boundary(bin, offset) when offset >= byte_size(bin), do: byte_size(bin)
+
+  defp utf8_boundary(bin, offset) do
+    if :binary.at(bin, offset) in 0x80..0xBF do
+      utf8_boundary(bin, offset - 1)
+    else
+      offset
+    end
   end
 
   defp notify_progress(nil, _info), do: :ok
@@ -701,7 +741,24 @@ defmodule Traitee.Session.Server do
     end)
   end
 
+  # Any raise outside IOGuard.safe_execute (display formatting, input checks,
+  # output-guard shape mismatches) would otherwise kill the linked
+  # Task.async_stream task — and the session with it.
   defp run_one_tool(call, state, context_base) do
+    do_run_one_tool(call, state, context_base)
+  rescue
+    e ->
+      func = call["function"] || %{}
+
+      %{
+        role: "tool",
+        tool_call_id: call["id"],
+        name: func["name"],
+        content: "Error: tool execution failed — #{Exception.message(e)}"
+      }
+  end
+
+  defp do_run_one_tool(call, state, context_base) do
     func = call["function"] || %{}
     name = func["name"]
     args = parse_args(func["arguments"])
@@ -823,6 +880,29 @@ defmodule Traitee.Session.Server do
 
   defp most_recent_sender(_), do: {nil, nil}
 
+  # Fire-and-forget cognition signal: let the user model learn from the turn.
+  # UserModel.observe/2 is a cast and debounces internally; the task + rescue
+  # only shield against the GenServer being absent (e.g. in tests).
+  defp observe_user_model(state, sanitized_text) do
+    case most_recent_sender(state.channels) do
+      {nil, _} ->
+        :ok
+
+      {sender_id, _channel_type} ->
+        Task.start(fn ->
+          try do
+            UserModel.observe(sender_id, sanitized_text)
+          rescue
+            _ -> :ok
+          catch
+            :exit, _ -> :ok
+          end
+        end)
+
+        :ok
+    end
+  end
+
   defp track_channel(state, channel, opts) do
     reply_to = opts[:reply_to]
     sender_id = opts[:sender_id]
@@ -893,29 +973,41 @@ defmodule Traitee.Session.Server do
     end
   end
 
-  defp check_workshop_presentations(state) do
+  # The task only FETCHES pending presentations; STM pushes and
+  # mark_presented happen in the session process via the
+  # {:workshop_presentations, projects} handle_info above.
+  defp check_workshop_presentations(_state) do
+    session_pid = self()
+
     Task.start(fn ->
       owner_id = Traitee.Config.get([:security, :owner_id])
 
       if owner_id do
-        presentations = Traitee.Cognition.Workshop.pending_presentations(owner_id)
-
-        Enum.each(presentations, fn project ->
-          Traitee.Cognition.Workshop.mark_presented(project.id)
-
-          STM.push(
-            state.stm_state,
-            "system",
-            "[Workshop] While you were away, I built '#{project.name}': #{project.description}. " <>
-              "Type: #{project.project_type}. Artifacts: #{inspect(project.artifacts)}. " <>
-              "Mention this to the user when appropriate.",
-            channel: :internal
-          )
-        end)
+        case Workshop.pending_presentations(owner_id) do
+          [] -> :ok
+          projects -> send(session_pid, {:workshop_presentations, projects})
+        end
       end
     end)
+
+    :ok
   rescue
     _ -> :ok
+  end
+
+  defp push_workshop_presentation(project, state) do
+    stm_state =
+      STM.push(
+        state.stm_state,
+        "system",
+        "[Workshop] While you were away, I built '#{project.name}': #{project.description}. " <>
+          "Type: #{project.project_type}. Artifacts: #{inspect(project.artifacts)}. " <>
+          "Mention this to the user when appropriate.",
+        channel: :internal
+      )
+
+    safe_clear(fn -> Workshop.mark_presented(project.id) end)
+    %{state | stm_state: stm_state}
   end
 
   defp maybe_apply_model_override(request, %Lifecycle{model_override: nil}), do: request

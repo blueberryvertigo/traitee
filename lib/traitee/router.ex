@@ -119,7 +119,6 @@ defmodule Traitee.Router do
       {:skill, _content} -> :pass
       :debounced -> {:blocked, :debounced}
       :ignored -> {:blocked, :ignored_in_group}
-      _ -> :pass
     end
   rescue
     _ -> :pass
@@ -131,25 +130,17 @@ defmodule Traitee.Router do
 
     case Session.ensure_started(session_id, inbound.channel_type) do
       {:ok, pid} ->
-        start_typing(inbound)
-
+        # Typing starts INSIDE the response task so the same process that
+        # started the loop stops it (the pid travels lexically, not via the
+        # process dictionary), and the loop's parent-liveness check tracks
+        # the task rather than the short-lived routing process.
         Task.start(fn ->
+          typing = start_typing(inbound)
+
           try do
-            reply_to = inbound[:reply_to] || inbound.sender_id
-            channel_opts = [reply_to: reply_to, sender_id: inbound.sender_id]
-
-            case SessionServer.send_message(pid, inbound.text, inbound.channel_type, channel_opts) do
-              {:ok, response} ->
-                stop_typing(inbound)
-                deliver_response(inbound, response)
-
-              {:error, reason} ->
-                stop_typing(inbound)
-                Logger.warning("Session error for #{session_id}: #{inspect(reason)}")
-                deliver_response(inbound, "[error] Failed to process message: #{inspect(reason)}")
-            end
+            handle_session_turn(pid, inbound, session_id)
           after
-            stop_typing(inbound)
+            stop_typing(typing)
           end
         end)
 
@@ -158,29 +149,48 @@ defmodule Traitee.Router do
     end
   end
 
+  defp handle_session_turn(pid, inbound, session_id) do
+    reply_to = inbound[:reply_to] || inbound.sender_id
+    channel_opts = [reply_to: reply_to, sender_id: inbound.sender_id]
+
+    case call_session(pid, inbound, channel_opts) do
+      {:ok, response} ->
+        deliver_response(inbound, response)
+
+      {:error, :session_timeout} ->
+        Logger.warning("Session call timed out for #{session_id}")
+
+        deliver_response(
+          inbound,
+          "This is taking longer than expected — your request timed out. Please try again."
+        )
+
+      {:error, reason} ->
+        Logger.warning("Session error for #{session_id}: #{inspect(reason)}")
+        deliver_response(inbound, "[error] Failed to process message: #{inspect(reason)}")
+    end
+  end
+
+  # The 300s GenServer.call can exit with :timeout when the session is busy
+  # with queued messages or a long turn — catch it so the user still gets a
+  # response instead of a silently dead task.
+  defp call_session(pid, inbound, channel_opts) do
+    SessionServer.send_message(pid, inbound.text, inbound.channel_type, channel_opts)
+  catch
+    :exit, {:timeout, _} -> {:error, :session_timeout}
+    :exit, reason -> {:error, {:session_exit, reason}}
+  end
+
   # -- Typing indicators --
 
   defp start_typing(inbound) do
     target = inbound[:reply_to] || inbound[:channel_id] || inbound.sender_id
-
-    try do
-      ref = Typing.start(inbound.channel_type, to_string(target))
-      Process.put({__MODULE__, :typing_ref}, ref)
-    rescue
-      _ -> :ok
-    end
+    Typing.start(inbound.channel_type, to_string(target))
+  rescue
+    _ -> nil
   end
 
-  defp stop_typing(_inbound) do
-    case Process.get({__MODULE__, :typing_ref}) do
-      nil ->
-        :ok
-
-      ref ->
-        Typing.stop(ref)
-        Process.delete({__MODULE__, :typing_ref})
-    end
-  end
+  defp stop_typing(typing_pid), do: Typing.stop(typing_pid)
 
   # -- Security --
 

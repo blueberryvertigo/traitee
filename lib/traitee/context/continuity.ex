@@ -122,7 +122,7 @@ defmodule Traitee.Context.Continuity do
     recent_messages =
       Schema.Message
       |> where([m], m.session_id == ^session_id)
-      |> order_by([m], desc: m.inserted_at)
+      |> order_by([m], desc: m.inserted_at, desc: m.id)
       |> limit(50)
       |> Traitee.Repo.all()
       |> Enum.reverse()
@@ -208,17 +208,20 @@ defmodule Traitee.Context.Continuity do
     end
   end
 
-  defp extract_keywords(text) do
-    stop_words = MapSet.new(~w(the a an is are was were be been being have has had
-      do does did will would shall should may might can could
-      i me my we our you your he she it they them their
-      this that these those in on at by for with from to of and or but))
+  @stop_words Map.from_keys(
+                ~w(the a an is are was were be been being have has had
+                   do does did will would shall should may might can could
+                   i me my we our you your he she it they them their
+                   this that these those in on at by for with from to of and or but),
+                true
+              )
 
+  defp extract_keywords(text) do
     text
     |> String.downcase()
     |> String.replace(~r/[^a-z0-9\s]/, "")
     |> String.split(~r/\s+/, trim: true)
-    |> Enum.reject(fn w -> MapSet.member?(stop_words, w) or String.length(w) < 3 end)
+    |> Enum.reject(fn w -> Map.has_key?(@stop_words, w) or String.length(w) < 3 end)
     |> MapSet.new()
   end
 end

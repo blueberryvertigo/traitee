@@ -3,8 +3,10 @@ defmodule Traitee.Memory.Vector do
   Vector index for semantic retrieval across all memory tiers.
 
   Stores embeddings in an ETS table and performs cosine similarity
-  search using Nx tensors. For datasets under 100k vectors, this
-  in-memory approach is fast enough without external dependencies.
+  search. Embeddings are normalized to unit length on insert, so
+  similarity reduces to a single-pass dot product over float lists.
+  For datasets under 100k vectors, this in-memory approach is fast
+  enough without external dependencies.
   """
 
   @table :traitee_vectors
@@ -24,10 +26,13 @@ defmodule Traitee.Memory.Vector do
   @doc """
   Stores an embedding vector for a given source type and ID.
   Source types: :message, :summary, :fact, :entity
+
+  The vector is normalized to unit length before storage so searches
+  only need a dot product.
   """
   def store(source_type, source_id, embedding) when is_list(embedding) do
     key = {source_type, source_id}
-    :ets.insert(@table, {key, embedding})
+    :ets.insert(@table, {key, normalize(embedding)})
     :ok
   end
 
@@ -37,6 +42,7 @@ defmodule Traitee.Memory.Vector do
   Removes an embedding.
   """
   def delete(source_type, source_id) do
+    init()
     :ets.delete(@table, {source_type, source_id})
     :ok
   end
@@ -56,25 +62,22 @@ defmodule Traitee.Memory.Vector do
     filter_type = opts[:source_type]
     min_score = opts[:min_score] || 0.0
 
-    query_tensor = to_tensor(query_embedding)
+    query = query_embedding |> to_float_list() |> normalize()
 
-    results =
-      @table
-      |> :ets.tab2list()
-      |> maybe_filter_type(filter_type)
-      |> Enum.map(fn {{stype, sid}, embedding} ->
-        score = cosine_similarity(query_tensor, to_tensor(embedding))
-        {stype, sid, score}
-      end)
-      |> Enum.filter(fn {_, _, score} -> score >= min_score end)
-      |> Enum.sort_by(fn {_, _, score} -> score end, :desc)
-      |> Enum.take(k)
-
-    results
+    @table
+    |> :ets.tab2list()
+    |> maybe_filter_type(filter_type)
+    |> Enum.map(fn {{stype, sid}, embedding} ->
+      {stype, sid, dot_product(query, embedding)}
+    end)
+    |> Enum.filter(fn {_, _, score} -> score >= min_score end)
+    |> Enum.sort_by(fn {_, _, score} -> score end, :desc)
+    |> Enum.take(k)
   end
 
   @doc """
   Retrieves a stored embedding for a given source type and ID.
+  Note: stored embeddings are unit-normalized.
   """
   def get_embedding(source_type, source_id) do
     init()
@@ -153,29 +156,32 @@ defmodule Traitee.Memory.Vector do
 
     load_summaries()
     load_facts()
+    load_entities()
 
     :ok
   end
 
   # -- Private --
 
-  defp cosine_similarity(a, b) do
-    dot = Nx.dot(a, b) |> Nx.to_number()
-    norm_a = Nx.LinAlg.norm(a) |> Nx.to_number()
-    norm_b = Nx.LinAlg.norm(b) |> Nx.to_number()
+  # Stored vectors are unit-normalized, so cosine similarity is a plain
+  # dot product — no per-row tensor construction or norm recomputation.
+  defp dot_product(a, b) do
+    Enum.zip_reduce(a, b, 0.0, fn x, y, acc -> acc + x * y end)
+  end
 
-    if norm_a == 0.0 or norm_b == 0.0 do
-      0.0
+  defp normalize(embedding) do
+    floats = Enum.map(embedding, &(&1 * 1.0))
+    norm = :math.sqrt(Enum.reduce(floats, 0.0, fn x, acc -> acc + x * x end))
+
+    if norm == 0.0 do
+      floats
     else
-      dot / (norm_a * norm_b)
+      Enum.map(floats, &(&1 / norm))
     end
   end
 
-  defp to_tensor(embedding) when is_list(embedding) do
-    Nx.tensor(embedding, type: :f32)
-  end
-
-  defp to_tensor(%Nx.Tensor{} = t), do: t
+  defp to_float_list(%Nx.Tensor{} = t), do: Nx.to_flat_list(t)
+  defp to_float_list(embedding) when is_list(embedding), do: embedding
 
   defp maybe_filter_type(entries, nil), do: entries
 
@@ -211,10 +217,24 @@ defmodule Traitee.Memory.Vector do
     end)
   end
 
+  defp load_entities do
+    import Ecto.Query
+
+    Traitee.Memory.Schema.Entity
+    |> where([e], not is_nil(e.embedding))
+    |> Traitee.Repo.all()
+    |> Enum.each(fn entity ->
+      case decode_embedding(entity.embedding) do
+        {:ok, emb} -> store(:entity, entity.id, emb)
+        _ -> :ok
+      end
+    end)
+  end
+
   defp decode_embedding(nil), do: {:error, nil}
 
   defp decode_embedding(binary) when is_binary(binary) do
-    {:ok, :erlang.binary_to_term(binary)}
+    {:ok, :erlang.binary_to_term(binary, [:safe])}
   rescue
     _ -> {:error, :invalid_embedding}
   end

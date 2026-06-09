@@ -88,21 +88,19 @@ defmodule Traitee.LLM.Router do
   def embed(texts) do
     {primary_mod, fallback_mod} = embed_providers()
 
-    cond do
-      primary_mod && function_exported?(primary_mod, :embed, 1) ->
-        case primary_mod.embed(texts) do
-          {:ok, _} = ok ->
-            ok
+    if primary_mod && function_exported?(primary_mod, :embed, 1) do
+      case primary_mod.embed(texts) do
+        {:ok, _} = ok ->
+          ok
 
-          {:error, :not_supported} ->
-            try_fallback_embed_direct(texts, fallback_mod)
+        {:error, :not_supported} ->
+          try_fallback_embed_direct(texts, fallback_mod)
 
-          error ->
-            error
-        end
-
-      true ->
-        try_fallback_embed_direct(texts, fallback_mod)
+        error ->
+          error
+      end
+    else
+      try_fallback_embed_direct(texts, fallback_mod)
     end
   end
 
@@ -255,13 +253,15 @@ defmodule Traitee.LLM.Router do
     end
   end
 
-  defp do_track_usage(state, %CompletionResponse{usage: usage}) when is_map(usage) do
+  defp do_track_usage(state, %CompletionResponse{usage: usage} = resp) when is_map(usage) do
+    prompt_tokens = Map.get(usage, :prompt_tokens, 0) || 0
+    completion_tokens = Map.get(usage, :completion_tokens, 0) || 0
+
     updated = %{
       requests: state.usage.requests + 1,
-      tokens_in: state.usage.tokens_in + (usage[:prompt_tokens] || usage.prompt_tokens || 0),
-      tokens_out:
-        state.usage.tokens_out + (usage[:completion_tokens] || usage.completion_tokens || 0),
-      cost: state.usage.cost + estimate_cost(state, usage)
+      tokens_in: state.usage.tokens_in + prompt_tokens,
+      tokens_out: state.usage.tokens_out + completion_tokens,
+      cost: state.usage.cost + estimate_cost(state, resp.model, prompt_tokens, completion_tokens)
     }
 
     %{state | usage: updated}
@@ -269,18 +269,38 @@ defmodule Traitee.LLM.Router do
 
   defp do_track_usage(state, _), do: state
 
-  defp estimate_cost(state, usage) do
-    info = state.primary_provider.model_info(state.primary_model)
+  defp estimate_cost(state, model, prompt_tokens, completion_tokens) do
+    {provider, model_id} = pricing_source(state, model)
+    info = provider.model_info(model_id)
 
-    input_cost =
-      (usage[:prompt_tokens] || usage.prompt_tokens || 0) / 1000 * (info.cost_per_1k_input || 0)
-
-    output_cost =
-      (usage[:completion_tokens] || usage.completion_tokens || 0) / 1000 *
-        (info.cost_per_1k_output || 0)
-
-    input_cost + output_cost
+    prompt_tokens / 1000 * (info.cost_per_1k_input || 0) +
+      completion_tokens / 1000 * (info.cost_per_1k_output || 0)
   end
+
+  # Prices with the provider/model that actually served the request (the
+  # fallback may have answered); unknown models fall back to primary pricing.
+  defp pricing_source(state, model) when is_binary(model) do
+    cond do
+      matches_model?(model, state.primary_model) ->
+        {state.primary_provider, state.primary_model}
+
+      state.fallback_provider && matches_model?(model, state.fallback_model) ->
+        {state.fallback_provider, state.fallback_model}
+
+      true ->
+        {state.primary_provider, state.primary_model}
+    end
+  end
+
+  defp pricing_source(state, _model), do: {state.primary_provider, state.primary_model}
+
+  # Providers report dated model ids (e.g. "gpt-4o-2024-08-06"), so a prefix
+  # match against the configured id is accepted as well.
+  defp matches_model?(model, configured) when is_binary(configured) do
+    model == configured or String.starts_with?(model, configured)
+  end
+
+  defp matches_model?(_model, _configured), do: false
 
   defp parse_or_default(model_string) do
     case Provider.parse_model(model_string) do

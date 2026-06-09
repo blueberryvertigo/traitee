@@ -240,7 +240,6 @@ defmodule Traitee.Security.Filesystem do
 
     {resolved_for_audit, result_for_audit} =
       case result do
-        {:ok, _resolved} -> {path, :ok}
         :ok -> {path, :ok}
         {:error, _} = err -> {path, err}
       end
@@ -442,9 +441,13 @@ defmodule Traitee.Security.Filesystem do
     normalized = normalize_for_match(resolved)
 
     cond do
-      # Data-dir access is now governed by check_data_dir_policy, evaluated
-      # before this function. If we reach here, the path is outside the data
-      # dir and must match a configured allow rule.
+      # Data-dir access is governed solely by check_data_dir_policy, which
+      # already ran (and allowed) before this function. Requiring data-dir
+      # paths to ALSO match a configured allow rule would contradict that
+      # policy (check_default_policy skips data-dir paths the same way).
+      path_in_data_dir?(resolved) ->
+        :ok
+
       rule = find_allow_rule(normalized, policy.allow_rules) ->
         check_rule_permissions(rule, operation, resolved)
 
@@ -749,22 +752,55 @@ defmodule Traitee.Security.Filesystem do
   @doc false
   def glob_match?(path, pattern) do
     normalized_pattern = normalize_for_match(pattern)
-    regex = glob_to_regex(normalized_pattern)
+    regex = cached_glob_regex(normalized_pattern)
     Regex.match?(regex, path)
   end
 
+  # Compiling a regex per pattern per call was a hot-path tax: every
+  # check_path runs ~50 hardcoded deny patterns through glob_match?.
+  # Compiled regexes are cached in :persistent_term keyed by pattern —
+  # the set of patterns is small and operator-controlled, so the cache
+  # is bounded and writes (a global GC trigger) happen once per pattern.
+  defp cached_glob_regex(pattern) do
+    key = {__MODULE__, :glob, pattern}
+
+    case :persistent_term.get(key, nil) do
+      nil ->
+        regex = glob_to_regex(pattern)
+        :persistent_term.put(key, regex)
+        regex
+
+      regex ->
+        regex
+    end
+  end
+
+  # Glob → regex with three fixes over the naive split-on-** approach:
+  #   • ALL regex metacharacters in literal segments are escaped (custom
+  #     config patterns containing `(`, `[`, `+`, `{` no longer crash or
+  #     mis-match).
+  #   • A trailing `/**` also matches the bare directory itself, so a
+  #     `:list` of `/home/u/.ssh` is caught by `**/.ssh/**`.
+  #   • A leading `**/` anchors to path-segment boundaries, so `**/.env`
+  #     matches `/app/.env` but no longer matches `/app/foo.env`.
+  # Placeholder bytes <<0>>..<<4>> cannot occur in patterns (NUL paths are
+  # rejected upstream and patterns come from code/config).
   defp glob_to_regex(pattern) do
-    parts = String.split(pattern, "**")
+    source =
+      pattern
+      |> String.replace("**/", <<0>>)
+      |> String.replace("/**", <<1>>)
+      |> String.replace("**", <<2>>)
+      |> String.replace("*", <<3>>)
+      |> String.replace("?", <<4>>)
+      |> Regex.escape()
+      |> String.replace(<<0>>, "(.*/)?")
+      |> String.replace(<<1>>, "(/.*)?")
+      |> String.replace(<<2>>, ".*")
+      |> String.replace(<<3>>, "[^/]*")
+      |> String.replace(<<4>>, "[^/]")
 
-    regex_str =
-      Enum.map_join(parts, ".*", fn part ->
-        part
-        |> String.replace(".", "\\.")
-        |> String.replace("*", "[^/]*")
-        |> String.replace("?", "[^/]")
-      end)
-
-    Regex.compile!("^#{regex_str}$", "i")
+    Regex.compile!("^#{source}$", "i")
   end
 
   defp extract_paths_from_command(command) do
@@ -797,7 +833,18 @@ defmodule Traitee.Security.Filesystem do
       Regex.scan(~r{(?:^|[\s=|;&(<>])(%[A-Za-z_]+%[\\\/][^\s"';|&<>]+)}, cleaned)
       |> Enum.map(&List.last/1)
 
-    (unix_paths ++ win_paths ++ home_paths ++ env_paths ++ winenv_paths)
+    # Relative paths that start with ./, ../, or a hidden directory
+    # (`.ssh/id_rsa`). Previously only absolute/~/env-prefixed paths were
+    # extracted, so `cat .ssh/id_rsa` from $HOME bypassed the deny globs.
+    # Plain `foo/bar` is deliberately not matched (too many false positives).
+    rel_paths =
+      Regex.scan(
+        ~r{(?:^|[\s=|;&(<>])((?:\.\.?[/\\]|\.[A-Za-z][\w.-]*[/\\])[^\s"';|&<>]+)},
+        cleaned
+      )
+      |> Enum.map(&List.last/1)
+
+    (unix_paths ++ win_paths ++ home_paths ++ env_paths ++ winenv_paths ++ rel_paths)
     |> Enum.filter(&(String.length(&1) > 3))
     |> Enum.uniq()
   end

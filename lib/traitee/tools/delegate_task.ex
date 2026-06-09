@@ -163,7 +163,7 @@ defmodule Traitee.Tools.DelegateTask do
   # Structured error payload so the parent LLM sees a parsable subagent
   # failure rather than an unreadable tuple.
   defp delegation_error_xml(tasks, reason) do
-    tags = tasks |> Enum.map(& &1.tag) |> Enum.join(", ")
+    tags = Enum.map_join(tasks, ", ", & &1.tag)
 
     """
     <delegate_results count="#{length(tasks)}" completed="0" failed="#{length(tasks)}">

@@ -1,5 +1,13 @@
 defmodule Traitee.AutoReply.Debouncer do
-  @moduledoc "Debounce rapid messages from the same sender."
+  @moduledoc """
+  Debounce rapid messages from the same sender.
+
+  The first message in a window passes through (`:ok`) and is processed
+  normally. Messages arriving within the debounce window are buffered
+  (`:buffered`); when the window closes the buffered inbound maps are
+  merged into a single message and re-injected into `Traitee.Router.route/1`
+  so they are processed instead of dropped.
+  """
   use GenServer
 
   @table :traitee_debounce
@@ -9,9 +17,15 @@ defmodule Traitee.AutoReply.Debouncer do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
-  @spec debounce(String.t(), String.t()) :: :ok | :buffered
-  def debounce(sender_id, message) do
-    GenServer.call(__MODULE__, {:debounce, sender_id, message})
+  @doc """
+  Debounce an inbound message map (the normalized shape produced by the
+  channels: `%{text: ..., sender_id: ..., channel_type: ..., ...}`).
+  Returns `:ok` when the message should be processed now, `:buffered`
+  when it has been queued for a merged flush.
+  """
+  @spec debounce(String.t(), map()) :: :ok | :buffered
+  def debounce(sender_id, inbound) do
+    GenServer.call(__MODULE__, {:debounce, sender_id, inbound})
   end
 
   @spec flush(String.t()) :: :ok
@@ -22,8 +36,11 @@ defmodule Traitee.AutoReply.Debouncer do
   @spec get_buffered(String.t()) :: [String.t()]
   def get_buffered(sender_id) do
     case :ets.lookup(@table, sender_id) do
-      [{^sender_id, messages, _timer}] -> Enum.reverse(messages)
-      [] -> []
+      [{^sender_id, buffer, _timer, _gen}] ->
+        buffer |> Enum.reverse() |> Enum.map(&buffered_text/1)
+
+      [] ->
+        []
     end
   end
 
@@ -36,54 +53,88 @@ defmodule Traitee.AutoReply.Debouncer do
   end
 
   @impl true
-  def handle_call({:debounce, sender_id, message}, _from, state) do
+  def handle_call({:debounce, sender_id, inbound}, _from, state) do
     case :ets.lookup(@table, sender_id) do
-      [{^sender_id, messages, timer_ref}] ->
+      [{^sender_id, buffer, timer_ref, gen}] ->
+        # Within the window: buffer this message and extend the window.
+        # The generation counter makes any already-mailboxed :flush from
+        # the cancelled timer a no-op (cancel_timer can race delivery).
         Process.cancel_timer(timer_ref)
-        new_ref = schedule_flush(sender_id)
-        :ets.insert(@table, {sender_id, [message | messages], new_ref})
+        new_gen = gen + 1
+        new_ref = schedule_flush(sender_id, new_gen)
+        :ets.insert(@table, {sender_id, [inbound | buffer], new_ref, new_gen})
         {:reply, :buffered, state}
 
       [] ->
-        ref = schedule_flush(sender_id)
-        :ets.insert(@table, {sender_id, [message], ref})
+        # First message: let it pass through unbuffered (it is processed
+        # by the caller) and just open the window.
+        ref = schedule_flush(sender_id, 0)
+        :ets.insert(@table, {sender_id, [], ref, 0})
         {:reply, :ok, state}
     end
   end
 
   @impl true
   def handle_cast({:flush, sender_id}, state) do
-    do_flush(sender_id)
+    case :ets.lookup(@table, sender_id) do
+      [{^sender_id, buffer, timer_ref, _gen}] ->
+        Process.cancel_timer(timer_ref)
+        :ets.delete(@table, sender_id)
+        flush_buffer(buffer)
+
+      [] ->
+        :ok
+    end
+
     {:noreply, state}
   end
 
   @impl true
-  def handle_info({:flush, sender_id}, state) do
-    do_flush(sender_id)
+  def handle_info({:flush, sender_id, gen}, state) do
+    case :ets.lookup(@table, sender_id) do
+      [{^sender_id, buffer, _timer, ^gen}] ->
+        :ets.delete(@table, sender_id)
+        flush_buffer(buffer)
+
+      _ ->
+        # Stale timer from a superseded generation (or already flushed).
+        :ok
+    end
+
     {:noreply, state}
   end
 
   @impl true
   def handle_info(_msg, state), do: {:noreply, state}
 
-  defp do_flush(sender_id) do
-    case :ets.lookup(@table, sender_id) do
-      [{^sender_id, messages, _timer}] ->
-        :ets.delete(@table, sender_id)
-        merged = messages |> Enum.reverse() |> Enum.join("\n")
+  defp flush_buffer([]), do: :ok
 
-        Phoenix.PubSub.broadcast(
-          Traitee.PubSub,
-          "debounce:flushed",
-          {:debounce_flushed, sender_id, merged}
-        )
+  defp flush_buffer(buffer) do
+    inbounds = Enum.reverse(buffer)
+    merged = Enum.map_join(inbounds, "\n", &buffered_text/1)
+    latest = List.last(inbounds)
 
-      [] ->
-        :ok
+    if is_map(latest) do
+      # Re-inject the merged message into the router so buffered messages
+      # are actually processed (they were previously broadcast to a topic
+      # nothing subscribed to, i.e. permanently lost).
+      Task.start(fn ->
+        try do
+          Traitee.Router.route(Map.put(latest, :text, merged))
+        rescue
+          _ -> :ok
+        end
+      end)
     end
+
+    :ok
   end
 
-  defp schedule_flush(sender_id) do
-    Process.send_after(self(), {:flush, sender_id}, @debounce_ms)
+  defp buffered_text(%{text: text}), do: text
+  defp buffered_text(other) when is_binary(other), do: other
+  defp buffered_text(_), do: ""
+
+  defp schedule_flush(sender_id, gen) do
+    Process.send_after(self(), {:flush, sender_id, gen}, @debounce_ms)
   end
 end

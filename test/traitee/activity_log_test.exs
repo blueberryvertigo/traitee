@@ -92,6 +92,33 @@ defmodule Traitee.ActivityLogTest do
     end
   end
 
+  describe "clear/1" do
+    test "removes all entries for a session", %{session_id: sid} do
+      for i <- 1..5, do: ActivityLog.record(sid, :tool_call, %{name: "tool_#{i}"})
+      assert length(ActivityLog.recent(sid, 10)) == 5
+
+      assert :ok = ActivityLog.clear(sid)
+      assert ActivityLog.recent(sid, 10) == []
+    end
+
+    test "does not touch other sessions" do
+      s1 = "clear_al_#{:erlang.unique_integer([:positive])}"
+      s2 = "clear_al_#{:erlang.unique_integer([:positive])}"
+
+      ActivityLog.record(s1, :tool_call, %{name: "a"})
+      ActivityLog.record(s2, :tool_call, %{name: "b"})
+
+      assert :ok = ActivityLog.clear(s1)
+
+      assert ActivityLog.recent(s1, 10) == []
+      assert length(ActivityLog.recent(s2, 10)) == 1
+    end
+
+    test "returns :ok for a session with no entries" do
+      assert :ok = ActivityLog.clear("never_seen_#{:erlang.unique_integer([:positive])}")
+    end
+  end
+
   describe "session isolation" do
     test "events are scoped per session" do
       s1 = "iso_al_#{:erlang.unique_integer([:positive])}"

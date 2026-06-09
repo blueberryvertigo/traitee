@@ -108,17 +108,77 @@ defmodule Traitee.Tools.File do
 
   defp safe_read(path, operation, session_id) do
     with :ok <- recheck_path(path, operation, session_id),
-         {:ok, content} <- File.read(path) do
-      if String.length(content) > @max_read do
-        {:ok, String.slice(content, 0, @max_read) <> "\n... (truncated)"}
+         {:ok, %File.Stat{size: size}} <- File.stat(path) do
+      if size > @max_read do
+        read_head(path, size)
       else
-        {:ok, content}
+        case File.read(path) do
+          {:ok, content} -> {:ok, content}
+          {:error, reason} -> {:error, "Cannot read #{path}: #{reason}"}
+        end
       end
     else
       {:error, reason} when is_atom(reason) -> {:error, "Cannot read #{path}: #{reason}"}
       {:error, reason} -> {:error, reason}
     end
   end
+
+  # Large files: read only the first @max_read bytes instead of loading
+  # the whole file into memory and grapheme-walking it.
+  defp read_head(path, size) do
+    case File.open(path, [:read, :binary], &IO.binread(&1, @max_read)) do
+      {:ok, data} when is_binary(data) ->
+        head = trim_to_utf8_boundary(data)
+        {:ok, head <> "\n... (truncated: showing first #{byte_size(head)} of #{size} bytes)"}
+
+      {:ok, :eof} ->
+        {:ok, ""}
+
+      {:ok, {:error, reason}} ->
+        {:error, "Cannot read #{path}: #{inspect(reason)}"}
+
+      {:error, reason} ->
+        {:error, "Cannot read #{path}: #{reason}"}
+    end
+  end
+
+  # Drop a trailing UTF-8 sequence that was cut mid-codepoint: walk back
+  # over continuation bytes (0b10xxxxxx, at most 3) to the final lead
+  # byte and keep it only if its full sequence fit within the slice.
+  defp trim_to_utf8_boundary(""), do: ""
+
+  defp trim_to_utf8_boundary(data) do
+    size = byte_size(data)
+
+    case find_last_lead_byte(data, size - 1, min(size, 4)) do
+      nil ->
+        data
+
+      {offset, byte} ->
+        if offset + utf8_sequence_length(byte) <= size do
+          data
+        else
+          binary_part(data, 0, offset)
+        end
+    end
+  end
+
+  defp find_last_lead_byte(_data, _offset, 0), do: nil
+
+  defp find_last_lead_byte(data, offset, remaining) do
+    byte = :binary.at(data, offset)
+
+    if byte >= 0x80 and byte <= 0xBF do
+      find_last_lead_byte(data, offset - 1, remaining - 1)
+    else
+      {offset, byte}
+    end
+  end
+
+  defp utf8_sequence_length(byte) when byte < 0x80, do: 1
+  defp utf8_sequence_length(byte) when byte < 0xE0, do: 2
+  defp utf8_sequence_length(byte) when byte < 0xF0, do: 3
+  defp utf8_sequence_length(_byte), do: 4
 
   defp safe_write(path, content, operation, session_id) do
     # Ensure the parent dir exists; the parent itself must pass the sandbox

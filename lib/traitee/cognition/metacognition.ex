@@ -42,7 +42,14 @@ defmodule Traitee.Cognition.Metacognition do
   def record_workshop_feedback(project_id, feedback)
       when feedback in [:accept, :reject, :ignore] do
     GenServer.cast(__MODULE__, {:workshop_feedback, project_id, feedback})
-    Workshop.user_feedback(project_id, feedback)
+
+    # Workshop.user_feedback/2 only has :accept/:reject clauses; forwarding
+    # :ignore raised a FunctionClauseError.
+    if feedback in [:accept, :reject] do
+      Workshop.user_feedback(project_id, feedback)
+    end
+
+    :ok
   end
 
   @doc "Get the current metacognition summary."
@@ -268,7 +275,7 @@ defmodule Traitee.Cognition.Metacognition do
         # FunctionClauseError (caught by the outer rescue) — the entire
         # SOUL self-improvement feature was inoperative.
         case Workspace.append_to_file(:soul, "\n\n## Self-Improvement Note\n#{suggestion}") do
-          :ok ->
+          {:ok, _} ->
             entry = %{type: :soul_update, suggestion: suggestion, applied_at: DateTime.utc_now()}
             Logger.info("[Metacognition] Applied self-improvement to SOUL.md")
             %{state | improvement_history: [entry | Enum.take(state.improvement_history, 49)]}

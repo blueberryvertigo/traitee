@@ -6,12 +6,20 @@ defmodule Traitee.Routing.AgentRouter do
   @ets_table :traitee_route_cache
   @ttl_ms 60_000
 
+  @doc """
+  Creates the route cache table. Called from `Traitee.Application.start/2`
+  pre-boot so the table is owned by a long-lived process — lazy creation by
+  whichever per-message task resolved first made the cache die with that task.
+  Two concurrent creators racing `:ets.new` is also tolerated.
+  """
   def init do
     if :ets.whereis(@ets_table) == :undefined do
       :ets.new(@ets_table, [:set, :named_table, :public, read_concurrency: true])
     end
 
     :ok
+  rescue
+    ArgumentError -> :ok
   end
 
   def resolve(inbound) do
@@ -53,9 +61,10 @@ defmodule Traitee.Routing.AgentRouter do
   end
 
   def invalidate_cache do
-    init()
     :ets.delete_all_objects(@ets_table)
     :ok
+  rescue
+    ArgumentError -> :ok
   end
 
   defp do_resolve(inbound) do
@@ -100,9 +109,9 @@ defmodule Traitee.Routing.AgentRouter do
     }
   end
 
+  # If the table is missing (e.g. init not run yet), degrade gracefully to
+  # uncached resolution instead of crashing the per-message task.
   defp lookup_cache(key) do
-    init()
-
     case :ets.lookup(@ets_table, key) do
       [{^key, route, ts}] ->
         if System.monotonic_time(:millisecond) - ts < @ttl_ms do
@@ -115,10 +124,14 @@ defmodule Traitee.Routing.AgentRouter do
       [] ->
         :miss
     end
+  rescue
+    ArgumentError -> :miss
   end
 
   defp store_cache(key, route) do
-    init()
     :ets.insert(@ets_table, {key, route, System.monotonic_time(:millisecond)})
+    :ok
+  rescue
+    ArgumentError -> :ok
   end
 end

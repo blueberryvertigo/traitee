@@ -16,6 +16,7 @@ defmodule Traitee.Application do
     Traitee.ActivityLog.init()
     Traitee.Delegation.Progress.init()
     Traitee.Security.SystemAuth.init()
+    Traitee.Routing.AgentRouter.init()
 
     children = [
       Traitee.Repo,

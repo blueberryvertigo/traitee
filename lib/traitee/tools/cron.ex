@@ -74,66 +74,14 @@ defmodule Traitee.Tools.Cron do
         %{"action" => "add", "name" => name, "schedule" => schedule, "message" => message} = args
       )
       when is_binary(name) and is_binary(schedule) and is_binary(message) do
-    job_type = detect_type(schedule)
-
     # Previously the LLM could pick an arbitrary target session id and
     # channel for the cron to fire into. That lets it schedule jobs that
     # reach OTHER users' sessions with arbitrary content. We force the
     # target to the current session and require owner auth to cross-
     # target another session or channel.
-    session_id = args["_session_id"]
-    session_channel = args["_session_channel_type"]
-    requested_target = args["target"]
-    requested_channel = args["channel"]
-
-    cross_target? =
-      is_binary(requested_target) and requested_target != "" and requested_target != session_id
-
-    cross_channel? =
-      is_binary(requested_channel) and requested_channel != "" and
-        to_string(session_channel) != requested_channel
-
-    gate =
-      if cross_target? or cross_channel? do
-        ToolGate.require_owner(args, "cron")
-      else
-        :ok
-      end
-
-    case gate do
-      :ok ->
-        target =
-          if cross_target?,
-            do: requested_target,
-            else: session_id || "cron:#{name}"
-
-        channel =
-          cond do
-            is_binary(requested_channel) and requested_channel != "" -> requested_channel
-            session_channel != nil -> to_string(session_channel)
-            true -> "cli"
-          end
-
-        attrs = %{
-          name: name,
-          job_type: job_type,
-          schedule: schedule,
-          payload: %{"message" => message},
-          channel: channel,
-          target: target,
-          enabled: true
-        }
-
-        case Scheduler.add_job(attrs) do
-          {:ok, job} ->
-            {:ok, "Job '#{job.name}' created (#{job_type}, next: #{job.next_run_at || "now"})"}
-
-          {:error, changeset} ->
-            {:error, "Failed to create job: #{inspect(changeset.errors)}"}
-        end
-
-      {:error, reason} ->
-        {:error, reason}
+    case authorize_add(args) do
+      :ok -> create_job(name, schedule, message, args)
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -178,6 +126,69 @@ defmodule Traitee.Tools.Cron do
   end
 
   def execute(_), do: {:error, "Missing required parameter: action"}
+
+  defp authorize_add(args) do
+    if cross_target?(args) or cross_channel?(args) do
+      ToolGate.require_owner(args, "cron")
+    else
+      :ok
+    end
+  end
+
+  defp cross_target?(args) do
+    requested_target = args["target"]
+
+    is_binary(requested_target) and requested_target != "" and
+      requested_target != args["_session_id"]
+  end
+
+  defp cross_channel?(args) do
+    requested_channel = args["channel"]
+
+    is_binary(requested_channel) and requested_channel != "" and
+      to_string(args["_session_channel_type"]) != requested_channel
+  end
+
+  defp create_job(name, schedule, message, args) do
+    job_type = detect_type(schedule)
+
+    attrs = %{
+      name: name,
+      job_type: job_type,
+      schedule: schedule,
+      payload: %{"message" => message},
+      channel: resolve_job_channel(args),
+      target: resolve_job_target(args, name),
+      enabled: true
+    }
+
+    case Scheduler.add_job(attrs) do
+      {:ok, job} ->
+        {:ok, "Job '#{job.name}' created (#{job_type}, next: #{job.next_run_at || "now"})"}
+
+      {:error, changeset} ->
+        {:error, "Failed to create job: #{inspect(changeset.errors)}"}
+    end
+  end
+
+  defp resolve_job_target(args, name) do
+    if cross_target?(args) do
+      args["target"]
+    else
+      args["_session_id"] || "cron:#{name}"
+    end
+  end
+
+  defp resolve_job_channel(args) do
+    requested_channel = args["channel"]
+    session_channel = args["_session_channel_type"]
+
+    cond do
+      is_binary(requested_channel) and requested_channel != "" -> requested_channel
+      session_channel != nil -> to_string(session_channel)
+      true -> "cli"
+    end
+  end
 
   defp detect_type(schedule) do
     cond do

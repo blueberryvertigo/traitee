@@ -53,6 +53,20 @@ defmodule Traitee.Delegation.Runner do
   """
   @spec run([task()], keyword()) :: {:ok, String.t()} | {:error, String.t()}
   def run(tasks, opts \\ []) when is_list(tasks) do
+    # Task.async LINKS each subagent to this runner. Trap exits so a
+    # crashing subagent surfaces through Task.yield_many as
+    # {:exit, reason} instead of killing the whole delegation run (and
+    # stranding the parent session's delegations_expected counter).
+    previous_trap = Process.flag(:trap_exit, true)
+
+    try do
+      do_run(tasks, opts)
+    after
+      Process.flag(:trap_exit, previous_trap)
+    end
+  end
+
+  defp do_run(tasks, opts) do
     tasks = Enum.take(tasks, @max_subagents)
     timeout = min(opts[:timeout] || @default_timeout, @max_timeout)
     system_prompt = opts[:system_prompt] || @subagent_system_prompt
@@ -101,7 +115,6 @@ defmodule Traitee.Delegation.Runner do
       end)
 
     results = Task.yield_many(async_tasks, timeout)
-    Progress.clear_session(session_id)
 
     formatted =
       Enum.zip(async_tasks, results)
@@ -137,6 +150,12 @@ defmodule Traitee.Delegation.Runner do
             )
         end
       end)
+
+    # Clear progress only AFTER the shutdown/kill handling above, and
+    # only for THIS run's tags — clear_session would wipe entries owned
+    # by a concurrently running second delegation in the same session.
+    Enum.each(tags, fn tag -> Progress.clear(session_id, tag) end)
+    flush_task_exits(async_tasks)
 
     {completed, failed} =
       Enum.reduce(formatted, {0, 0}, fn result, {c, f} ->
@@ -201,10 +220,8 @@ defmodule Traitee.Delegation.Runner do
   end
 
   defp sanitize_description(description) when is_binary(description) do
-    case Sanitizer.sanitize(description) do
-      %{sanitized: text} -> text
-      _ -> description
-    end
+    %{sanitized: text} = Sanitizer.sanitize(description)
+    text
   rescue
     _ -> description
   end
@@ -435,6 +452,20 @@ defmodule Traitee.Delegation.Runner do
     |> String.replace("\"", "&quot;")
     |> String.replace("'", "&apos;")
     |> String.replace("\r", " ")
+  end
+
+  # With exits trapped, each linked subagent Task leaves an
+  # {:EXIT, pid, reason} message in our mailbox (Task.shutdown flushes
+  # its own, but completed/crashed tasks don't). Drain them so they
+  # can't leak to the caller once the trap_exit flag is restored.
+  defp flush_task_exits(async_tasks) do
+    Enum.each(async_tasks, fn %Task{pid: pid} ->
+      receive do
+        {:EXIT, ^pid, _reason} -> :ok
+      after
+        0 -> :ok
+      end
+    end)
   end
 
   defp find_tag_for_task(tasks, async_task, async_tasks) do

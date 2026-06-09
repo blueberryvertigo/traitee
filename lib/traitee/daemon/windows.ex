@@ -7,7 +7,11 @@ defmodule Traitee.Daemon.Windows do
   def install(_opts \\ []) do
     elixir = System.find_executable("elixir") || "elixir"
     project_dir = File.cwd!()
-    command = "\"#{elixir}\" -S mix traitee.serve"
+
+    # Task Scheduler launches /tr commands from System32, so cd into the
+    # project dir first or `mix traitee.serve` can't find mix.exs.
+    command =
+      "cmd /c cd /d \"#{project_dir}\" && \"#{elixir}\" -S mix traitee.serve"
 
     schtasks(
       [

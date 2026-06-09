@@ -16,9 +16,11 @@ defmodule Traitee.LLM.Tokenizer do
 
   @doc """
   Estimates token count for a string.
+
+  Per-message overhead is applied only by `count_messages/1`.
   """
   def count_tokens(text) when is_binary(text) do
-    ceil(String.length(text) / @chars_per_token) + @overhead_per_message
+    ceil(String.length(text) / @chars_per_token)
   end
 
   def count_tokens(nil), do: 0
@@ -74,7 +76,21 @@ defmodule Traitee.LLM.Tokenizer do
     end
   end
 
-  defp extract_content(%{content: c}), do: c || ""
-  defp extract_content(%{"content" => c}), do: c || ""
+  defp extract_content(msg) when is_map(msg) do
+    content = Map.get(msg, :content) || Map.get(msg, "content")
+    tool_calls = Map.get(msg, :tool_calls) || Map.get(msg, "tool_calls")
+    serialize_content(content, tool_calls)
+  end
+
   defp extract_content(_), do: ""
+
+  defp serialize_content(content, tool_calls) when is_list(tool_calls) and tool_calls != [] do
+    to_text(content) <> Jason.encode!(tool_calls)
+  end
+
+  defp serialize_content(content, _tool_calls), do: to_text(content)
+
+  defp to_text(nil), do: ""
+  defp to_text(content) when is_binary(content), do: content
+  defp to_text(content), do: Jason.encode!(content)
 end

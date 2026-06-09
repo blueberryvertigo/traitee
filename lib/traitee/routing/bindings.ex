@@ -1,6 +1,8 @@
 defmodule Traitee.Routing.Bindings do
   @moduledoc "Route binding configuration and matching."
 
+  require Logger
+
   defstruct [:agent_id, :match_type, :match_value, :workspace, :model, :dm_scope, :priority]
 
   @type match_type :: :peer | :guild | :account | :channel | :default
@@ -77,8 +79,28 @@ defmodule Traitee.Routing.Bindings do
   end
 
   defp normalize_channel(ch) when is_atom(ch), do: ch
-  defp normalize_channel(ch) when is_binary(ch), do: String.to_existing_atom(ch)
+
+  # A misspelled channel name in TOML must not crash routing for every
+  # message — warn once and let the binding match nothing (nil never equals
+  # a real channel_type atom), so resolution falls back to the default.
+  defp normalize_channel(ch) when is_binary(ch) do
+    String.to_existing_atom(ch)
+  rescue
+    ArgumentError ->
+      warn_unknown_channel(ch)
+      nil
+  end
+
   defp normalize_channel(ch), do: ch
+
+  defp warn_unknown_channel(ch) do
+    key = {__MODULE__, :warned_channel, ch}
+
+    if not :persistent_term.get(key, false) do
+      :persistent_term.put(key, true)
+      Logger.warning("[Bindings] Unknown channel #{inspect(ch)} in routing binding — skipping it")
+    end
+  end
 
   defp parse_dm_scope(:per_peer), do: :per_peer
   defp parse_dm_scope("per_peer"), do: :per_peer

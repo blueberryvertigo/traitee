@@ -24,8 +24,8 @@ defmodule Traitee.AutoReply.Pipeline do
     end
   end
 
-  defp debounce_stage(%{sender_id: sender_id, text: text}) do
-    case Debouncer.debounce(sender_id, text) do
+  defp debounce_stage(%{sender_id: sender_id} = inbound) do
+    case Debouncer.debounce(sender_id, inbound) do
       :ok -> :ok
       :buffered -> :debounced
     end

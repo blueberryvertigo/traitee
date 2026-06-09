@@ -55,17 +55,29 @@ defmodule Traitee.Memory.HybridSearch do
   end
 
   # For the first (primary) expanded query we reuse a pre-computed embedding
-  # if one was passed in; for the rest we embed on demand. This halves the
-  # embedding round-trip count for typical 3-5-query expansions.
+  # if one was passed in; the rest are embedded in a SINGLE batched
+  # Router.embed call instead of one HTTP round-trip per query.
   defp expanded_vector_search([_first | rest], opts, pre_embedding) when pre_embedding != nil do
     head_results = vector_search_with_embedding(pre_embedding, opts)
-    tail_results = rest |> Enum.flat_map(&vector_search(&1, opts))
+    tail_results = batch_vector_search(rest, opts)
 
     (head_results ++ tail_results) |> dedupe_max_score()
   end
 
   defp expanded_vector_search(queries, opts, _pre_embedding) do
-    queries |> Enum.flat_map(&vector_search(&1, opts)) |> dedupe_max_score()
+    queries |> batch_vector_search(opts) |> dedupe_max_score()
+  end
+
+  defp batch_vector_search([], _opts), do: []
+
+  defp batch_vector_search(queries, opts) do
+    case Router.embed(queries) do
+      {:ok, embeddings} when is_list(embeddings) ->
+        Enum.flat_map(embeddings, &vector_search_with_embedding(&1, opts))
+
+      _ ->
+        []
+    end
   end
 
   defp expanded_keyword_search(queries, session_id) do
@@ -87,19 +99,6 @@ defmodule Traitee.Memory.HybridSearch do
     |> Enum.map(fn {_key, group} ->
       Enum.max_by(group, & &1.score)
     end)
-  end
-
-  defp vector_search(query, opts) do
-    case Router.embed([query]) do
-      {:ok, [embedding]} ->
-        Vector.search(embedding, opts[:limit] * 3, min_score: opts[:min_score])
-        |> Enum.map(fn {source, id, score} ->
-          %{source: source, id: id, score: score, content: nil, timestamp: nil, embedding: nil}
-        end)
-
-      _ ->
-        []
-    end
   end
 
   defp keyword_search(query, session_id) do
@@ -165,7 +164,9 @@ defmodule Traitee.Memory.HybridSearch do
       ts = if t, do: t.score, else: 0.0
       combined = vw * vs + tw * ts
 
-      base = v || t
+      # Vector hits carry content: nil / timestamp: nil; backfill from the
+      # text hit so temporal decay and MMR diversity still apply.
+      base = if t && v, do: %{v | content: t.content, timestamp: t.timestamp}, else: v || t
       %{base | score: combined}
     end)
   end

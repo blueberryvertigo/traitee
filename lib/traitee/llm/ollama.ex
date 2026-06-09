@@ -5,6 +5,7 @@ defmodule Traitee.LLM.Ollama do
 
   @behaviour Traitee.LLM.Provider
 
+  alias Traitee.LLM.SSE
   alias Traitee.LLM.Types.{CompletionRequest, CompletionResponse, ModelInfo}
 
   @default_base_url "http://localhost:11434"
@@ -23,7 +24,7 @@ defmodule Traitee.LLM.Ollama do
   def complete(%CompletionRequest{} = request) do
     body = %{
       model: request.model,
-      messages: Enum.map(request.messages, &format_message/1),
+      messages: build_messages(request),
       stream: false,
       options: build_options(request)
     }
@@ -50,7 +51,7 @@ defmodule Traitee.LLM.Ollama do
   def stream(%CompletionRequest{} = request, callback) when is_function(callback, 1) do
     body = %{
       model: request.model,
-      messages: Enum.map(request.messages, &format_message/1),
+      messages: build_messages(request),
       stream: true,
       options: build_options(request)
     }
@@ -61,22 +62,35 @@ defmodule Traitee.LLM.Ollama do
         json: body,
         receive_timeout: 120_000,
         retry: false,
-        into: fn {:data, data}, acc ->
-          case Jason.decode(data) do
-            {:ok, %{"message" => %{"content" => text}}} when text != "" ->
-              callback.(text)
-
-            _ ->
-              :ok
-          end
-
-          {:cont, acc}
+        into: fn {:data, data}, {req_acc, resp_acc} ->
+          buffer = Req.Response.get_private(resp_acc, :ndjson_buffer, "")
+          {lines, rest} = SSE.extract_lines(buffer <> data)
+          Enum.each(lines, &handle_stream_line(&1, callback))
+          {:cont, {req_acc, Req.Response.put_private(resp_acc, :ndjson_buffer, rest)}}
         end
       )
 
     case Req.post(req) do
-      {:ok, _resp} -> {:ok, %CompletionResponse{content: "", model: request.model}}
-      {:error, reason} -> {:error, {:stream_failed, reason}}
+      {:ok, %{status: 200}} ->
+        {:ok, %CompletionResponse{content: "", model: request.model}}
+
+      {:ok, %{status: status} = resp} ->
+        {:error, {:api_error, status, Req.Response.get_private(resp, :ndjson_buffer, "")}}
+
+      {:error, reason} ->
+        {:error, {:stream_failed, reason}}
+    end
+  end
+
+  defp handle_stream_line("", _callback), do: :ok
+
+  defp handle_stream_line(line, callback) do
+    case Jason.decode(line) do
+      {:ok, %{"message" => %{"content" => text}}} when is_binary(text) and text != "" ->
+        callback.(text)
+
+      _ ->
+        :ok
     end
   end
 
@@ -120,6 +134,16 @@ defmodule Traitee.LLM.Ollama do
   end
 
   # -- Private --
+
+  defp build_messages(%CompletionRequest{} = req) do
+    messages = Enum.map(req.messages, &format_message/1)
+
+    if req.system do
+      [%{role: "system", content: req.system} | messages]
+    else
+      messages
+    end
+  end
 
   defp format_message(%Traitee.LLM.Types.Message{} = msg) do
     %{role: msg.role, content: msg.content}

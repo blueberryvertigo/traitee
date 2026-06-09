@@ -8,6 +8,8 @@ defmodule Traitee.Context.Budget do
 
   alias Traitee.LLM.Tokenizer
 
+  @type t :: %__MODULE__{}
+
   defstruct [
     :total_budget,
     :system_prompt_tokens,
@@ -82,7 +84,7 @@ defmodule Traitee.Context.Budget do
 
   def reallocate(%__MODULE__{} = budget, from_slot, to_slot) do
     allocated = Map.get(budget |> Map.from_struct(), from_slot, 0)
-    used = Map.get(budget.usage, from_slot, 0)
+    used = Map.get(budget.usage, slot_usage_key(from_slot), 0)
     surplus = max(allocated - used, 0)
 
     if surplus > 0 do
@@ -140,17 +142,19 @@ defmodule Traitee.Context.Budget do
 
   def fit_within(items, max_tokens) do
     {fitted, _remaining} =
-      Enum.reduce(items, {[], max_tokens}, fn item, {acc, remaining} ->
+      Enum.reduce_while(items, {[], max_tokens}, fn item, {acc, remaining} ->
         tokens = item_tokens(item)
 
         if tokens <= remaining do
-          {acc ++ [item], remaining - tokens}
+          {:cont, {[item | acc], remaining - tokens}}
         else
-          {acc, remaining}
+          # Halt at the first non-fitting item: skipping it and continuing
+          # would punch holes mid-conversation.
+          {:halt, {acc, remaining}}
         end
       end)
 
-    fitted
+    Enum.reverse(fitted)
   end
 
   def fit_recent(items, max_tokens) do
@@ -205,6 +209,16 @@ defmodule Traitee.Context.Budget do
       max(reminder_budget, 0),
       max(stm_budget, 0)
     }
+  end
+
+  # Usage is recorded under the bare slot name (:ltm, :mtm, ...) while the
+  # struct fields carry a _budget suffix (:ltm_budget, ...). Map one to the
+  # other so reallocate/3 sees actual usage instead of always reading 0.
+  defp slot_usage_key(slot) do
+    slot
+    |> Atom.to_string()
+    |> String.replace_suffix("_budget", "")
+    |> String.to_existing_atom()
   end
 
   defp item_tokens(%{token_count: tc}) when is_integer(tc), do: tc

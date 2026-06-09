@@ -136,20 +136,27 @@ defmodule Traitee.Memory.STM do
     if size > capacity do
       overage = size - capacity
       chunk_size = max(overage, div(capacity, 5))
-
-      evicted =
-        table
-        |> :ets.tab2list()
-        |> Enum.sort_by(fn {k, _} -> k end)
-        |> Enum.take(chunk_size)
-        |> Enum.map(fn {k, v} ->
-          :ets.delete(table, k)
-          v
-        end)
-
-      {:evict, evicted}
+      {:evict, take_oldest(table, chunk_size)}
     else
       :ok
+    end
+  end
+
+  # The table is an :ordered_set keyed by counter, so the oldest entries can
+  # be popped via :ets.first/1 + :ets.take/2 without copying/sorting the
+  # whole table.
+  defp take_oldest(_table, n) when n <= 0, do: []
+
+  defp take_oldest(table, n) do
+    case :ets.first(table) do
+      :"$end_of_table" ->
+        []
+
+      key ->
+        case :ets.take(table, key) do
+          [{_k, v}] -> [v | take_oldest(table, n - 1)]
+          [] -> take_oldest(table, n)
+        end
     end
   end
 
@@ -159,7 +166,7 @@ defmodule Traitee.Memory.STM do
     messages =
       Message
       |> where([m], m.session_id == ^session_id)
-      |> order_by([m], desc: m.inserted_at)
+      |> order_by([m], desc: m.inserted_at, desc: m.id)
       |> limit(^capacity)
       |> Traitee.Repo.all()
       |> Enum.reverse()
@@ -212,16 +219,9 @@ defmodule Traitee.Memory.STM do
   end
 
   defp next_counter(table) do
-    case :ets.info(table, :size) do
-      0 ->
-        0
-
-      _ ->
-        table
-        |> :ets.tab2list()
-        |> Enum.max_by(fn {k, _} -> k end)
-        |> elem(0)
-        |> Kernel.+(1)
+    case :ets.last(table) do
+      :"$end_of_table" -> 0
+      key -> key + 1
     end
   end
 

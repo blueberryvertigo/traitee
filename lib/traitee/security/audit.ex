@@ -250,6 +250,4 @@ defmodule Traitee.Security.Audit do
     |> Enum.sort_by(fn {_, count} -> count end, :desc)
     |> Enum.map_join(", ", fn {key, count} -> "#{key}=#{count}" end)
   end
-
-  defp format_freq(_), do: "(none)"
 end

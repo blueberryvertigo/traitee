@@ -24,6 +24,10 @@ defmodule Traitee.Skills.Registry do
 
   @impl true
   def init(_opts) do
+    # Drop per-session load tracking when sessions end — otherwise the
+    # loaded_sessions map grows unboundedly.
+    Phoenix.PubSub.subscribe(Traitee.PubSub, "session:events")
+
     state = %{
       skills: Loader.scan(),
       loaded_sessions: %{}
@@ -62,6 +66,15 @@ defmodule Traitee.Skills.Registry do
     skills = Loader.scan()
     schedule_scan()
     {:noreply, %{state | skills: skills}}
+  end
+
+  def handle_info({:session_ended, session_id}, state) do
+    loaded =
+      state.loaded_sessions
+      |> Enum.reject(fn {{sid, _skill}, _loaded} -> sid == session_id end)
+      |> Map.new()
+
+    {:noreply, %{state | loaded_sessions: loaded}}
   end
 
   def handle_info(_msg, state), do: {:noreply, state}

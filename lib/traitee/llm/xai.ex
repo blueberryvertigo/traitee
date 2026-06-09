@@ -5,6 +5,7 @@ defmodule Traitee.LLM.XAI do
 
   @behaviour Traitee.LLM.Provider
 
+  alias Traitee.LLM.SSE
   alias Traitee.LLM.Types.{CompletionRequest, CompletionResponse, ModelInfo}
 
   @api_base "https://api.x.ai/v1"
@@ -115,35 +116,41 @@ defmodule Traitee.LLM.XAI do
       |> Req.merge(
         url: "#{@api_base}/chat/completions",
         json: body,
-        into: fn {:data, data}, acc ->
-          for line <- String.split(data, "\n", trim: true) do
-            case line do
-              "data: [DONE]" ->
-                :ok
-
-              "data: " <> json ->
-                case Jason.decode(json) do
-                  {:ok, %{"choices" => [%{"delta" => %{"content" => c}}]}} when is_binary(c) ->
-                    callback.(c)
-
-                  _ ->
-                    :ok
-                end
-
-              _ ->
-                :ok
-            end
-          end
-
-          {:cont, acc}
+        # No retries mid-stream: a transient retry would replay duplicate chunks.
+        retry: false,
+        into: fn {:data, data}, {req_acc, resp_acc} ->
+          buffer = Req.Response.get_private(resp_acc, :sse_buffer, "")
+          {lines, rest} = SSE.extract_lines(buffer <> data)
+          Enum.each(lines, &handle_stream_line(&1, callback))
+          {:cont, {req_acc, Req.Response.put_private(resp_acc, :sse_buffer, rest)}}
         end
       )
 
     case Req.post(req) do
-      {:ok, _resp} -> {:ok, %CompletionResponse{content: "", model: request.model}}
-      {:error, reason} -> {:error, {:stream_failed, reason}}
+      {:ok, %{status: 200}} ->
+        {:ok, %CompletionResponse{content: "", model: request.model}}
+
+      {:ok, %{status: status} = resp} ->
+        {:error, {:api_error, status, Req.Response.get_private(resp, :sse_buffer, "")}}
+
+      {:error, reason} ->
+        {:error, {:stream_failed, reason}}
     end
   end
+
+  defp handle_stream_line("data: [DONE]", _callback), do: :ok
+
+  defp handle_stream_line("data: " <> json, callback) do
+    case Jason.decode(json) do
+      {:ok, %{"choices" => [%{"delta" => %{"content" => c}}]}} when is_binary(c) ->
+        callback.(c)
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp handle_stream_line(_line, _callback), do: :ok
 
   @impl true
   def embed(_texts) do
@@ -169,7 +176,7 @@ defmodule Traitee.LLM.XAI do
   defp build_request_body(%CompletionRequest{} = req) do
     body = %{
       model: req.model,
-      messages: Enum.map(req.messages, &format_message/1)
+      messages: build_messages(req)
     }
 
     body
@@ -177,6 +184,16 @@ defmodule Traitee.LLM.XAI do
     |> maybe_put(:max_tokens, req.max_tokens)
     |> maybe_put(:stream, req.stream)
     |> maybe_put_tools(req.tools)
+  end
+
+  defp build_messages(%CompletionRequest{} = req) do
+    messages = Enum.map(req.messages, &format_message/1)
+
+    if req.system do
+      [%{role: "system", content: req.system} | messages]
+    else
+      messages
+    end
   end
 
   defp format_message(%Traitee.LLM.Types.Message{} = msg) do

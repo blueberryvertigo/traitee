@@ -9,7 +9,10 @@ defmodule Traitee.Memory.LTM do
 
   import Ecto.Query
   alias Traitee.Memory.Schema.{Entity, Fact, Relation}
+  alias Traitee.Memory.Vector
   alias Traitee.Repo
+
+  @default_search_limit 25
 
   # -- Entities --
 
@@ -19,19 +22,36 @@ defmodule Traitee.Memory.LTM do
   """
   def upsert_entity(name, type, description \\ nil) do
     case get_entity_by_name(name, type) do
-      nil ->
-        %Entity{}
-        |> Entity.changeset(%{name: name, entity_type: type, description: description})
-        |> Repo.insert()
-
-      existing ->
-        existing
-        |> Entity.changeset(%{
-          mention_count: (existing.mention_count || 0) + 1,
-          description: description || existing.description
-        })
-        |> Repo.update()
+      nil -> insert_entity(name, type, description)
+      existing -> bump_entity(existing, description)
     end
+  end
+
+  defp insert_entity(name, type, description) do
+    %Entity{}
+    |> Entity.changeset(%{name: name, entity_type: type, description: description})
+    |> Repo.insert()
+    |> case do
+      {:ok, entity} ->
+        {:ok, entity}
+
+      {:error, changeset} ->
+        # Read-then-insert is non-atomic: a concurrent writer may have created
+        # the entity between our lookup and insert. Re-fetch and update it.
+        case get_entity_by_name(name, type) do
+          nil -> {:error, changeset}
+          existing -> bump_entity(existing, description)
+        end
+    end
+  end
+
+  defp bump_entity(existing, description) do
+    existing
+    |> Entity.changeset(%{
+      mention_count: (existing.mention_count || 0) + 1,
+      description: description || existing.description
+    })
+    |> Repo.update()
   end
 
   @doc """
@@ -44,14 +64,15 @@ defmodule Traitee.Memory.LTM do
   end
 
   @doc """
-  Searches entities by name pattern.
+  Searches entities by name pattern. Limited to `limit` rows (default 25).
   """
-  def search_entities(query) do
+  def search_entities(query, limit \\ @default_search_limit) do
     pattern = "%#{query}%"
 
     Entity
     |> where([e], like(e.name, ^pattern) or like(e.description, ^pattern))
     |> order_by([e], desc: e.mention_count)
+    |> limit(^limit)
     |> Repo.all()
   end
 
@@ -70,6 +91,17 @@ defmodule Traitee.Memory.LTM do
   """
   def all_entities do
     Repo.all(Entity)
+  end
+
+  @doc """
+  Returns entities of a given entity_type, most recently updated first.
+  """
+  def entities_by_type(type, limit \\ 20) do
+    Entity
+    |> where([e], e.entity_type == ^type)
+    |> order_by([e], desc: e.updated_at)
+    |> limit(^limit)
+    |> Repo.all()
   end
 
   # -- Relations --
@@ -107,21 +139,34 @@ defmodule Traitee.Memory.LTM do
       Relation
       |> where([r], r.source_entity_id == ^entity_id)
       |> Repo.all()
-      |> Enum.map(fn r ->
-        target = Repo.get(Entity, r.target_entity_id)
-        %{direction: :outgoing, relation: r, entity: target}
-      end)
 
     incoming =
       Relation
       |> where([r], r.target_entity_id == ^entity_id)
       |> Repo.all()
-      |> Enum.map(fn r ->
-        source = Repo.get(Entity, r.source_entity_id)
-        %{direction: :incoming, relation: r, entity: source}
-      end)
 
-    outgoing ++ incoming
+    # Batch-load all linked entities in one query instead of one Repo.get
+    # per relation.
+    other_ids =
+      Enum.map(outgoing, & &1.target_entity_id) ++ Enum.map(incoming, & &1.source_entity_id)
+
+    entities = load_entities_by_ids(Enum.uniq(other_ids))
+
+    Enum.map(outgoing, fn r ->
+      %{direction: :outgoing, relation: r, entity: Map.get(entities, r.target_entity_id)}
+    end) ++
+      Enum.map(incoming, fn r ->
+        %{direction: :incoming, relation: r, entity: Map.get(entities, r.source_entity_id)}
+      end)
+  end
+
+  defp load_entities_by_ids([]), do: %{}
+
+  defp load_entities_by_ids(ids) do
+    Entity
+    |> where([e], e.id in ^ids)
+    |> Repo.all()
+    |> Map.new(&{&1.id, &1})
   end
 
   defp get_relation(source_id, target_id, type) do
@@ -166,14 +211,15 @@ defmodule Traitee.Memory.LTM do
   end
 
   @doc """
-  Searches facts by content pattern.
+  Searches facts by content pattern. Limited to `limit` rows (default 25).
   """
-  def search_facts(query) do
+  def search_facts(query, limit \\ @default_search_limit) do
     pattern = "%#{query}%"
 
     Fact
     |> where([f], like(f.content, ^pattern))
     |> order_by([f], desc: f.confidence)
+    |> limit(^limit)
     |> Repo.all()
   end
 
@@ -216,9 +262,16 @@ defmodule Traitee.Memory.LTM do
   deleting its facts/relations first, otherwise they'll orphan.
   """
   def delete_entity(entity_id) do
-    Entity
-    |> where([e], e.id == ^entity_id)
-    |> Repo.delete_all()
+    result =
+      Entity
+      |> where([e], e.id == ^entity_id)
+      |> Repo.delete_all()
+
+    # Drop the stale vector so semantic search can't surface a deleted
+    # entity. Reassigned facts keep their own ids, so their vectors stay
+    # valid.
+    Vector.delete(:entity, entity_id)
+    result
   end
 
   @doc """

@@ -8,9 +8,12 @@ defmodule Traitee.Channels.WhatsApp do
   use GenServer
 
   alias Traitee.Channels.Channel
+  alias Traitee.Channels.Splitter
   alias Traitee.Router, as: MessageRouter
 
   require Logger
+
+  @message_limit 4096
 
   defstruct [:token, :phone_number_id, :verify_token]
 
@@ -103,7 +106,18 @@ defmodule Traitee.Channels.WhatsApp do
 
   defp process_message(_msg, _value), do: :ok
 
-  defp send_whatsapp_message(%{token: token, phone_number_id: phone_id}, to, text) do
+  defp send_whatsapp_message(state, to, text) do
+    text
+    |> Splitter.split_message(@message_limit)
+    |> Enum.reduce_while(:ok, fn part, :ok ->
+      case send_whatsapp_part(state, to, part) do
+        :ok -> {:cont, :ok}
+        error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp send_whatsapp_part(%{token: token, phone_number_id: phone_id}, to, text) do
     url = "https://graph.facebook.com/v21.0/#{phone_id}/messages"
 
     body = %{

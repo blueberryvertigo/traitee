@@ -239,27 +239,29 @@ defmodule Traitee.Tools.Registry do
     Path.join(Traitee.data_dir(), "dynamic_tools.json")
   end
 
+  @always_enabled_tools ~w(memory sessions channel_send skill_manage workspace_edit task_tracker cognition)
+  @config_keyed_tools %{
+    "bash" => :bash,
+    "browser" => :browser,
+    "cron" => :cron,
+    "delegate_task" => :delegate_task,
+    "file" => :file,
+    "web_search" => :web_search
+  }
+
   defp tool_enabled?(module) do
     tool_name = module.name()
 
-    config =
-      case tool_name do
-        "bash" -> Traitee.Config.get([:tools, :bash])
-        "file" -> Traitee.Config.get([:tools, :file])
-        "web_search" -> Traitee.Config.get([:tools, :web_search])
-        "browser" -> Traitee.Config.get([:tools, :browser])
-        "cron" -> Traitee.Config.get([:tools, :cron])
-        "memory" -> %{enabled: true}
-        "sessions" -> %{enabled: true}
-        "channel_send" -> %{enabled: true}
-        "skill_manage" -> %{enabled: true}
-        "workspace_edit" -> %{enabled: true}
-        "delegate_task" -> Traitee.Config.get([:tools, :delegate_task]) || %{enabled: true}
-        "task_tracker" -> %{enabled: true}
-        "cognition" -> %{enabled: true}
-        _ -> %{enabled: false}
-      end
+    cond do
+      tool_name in @always_enabled_tools ->
+        true
 
-    config[:enabled] != false
+      config_key = @config_keyed_tools[tool_name] ->
+        config = Traitee.Config.get([:tools, config_key]) || %{}
+        config[:enabled] != false
+
+      true ->
+        false
+    end
   end
 end

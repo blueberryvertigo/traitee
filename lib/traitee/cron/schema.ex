@@ -3,6 +3,8 @@ defmodule Traitee.Cron.Schema do
   use Ecto.Schema
   import Ecto.Changeset
 
+  @type t :: %__MODULE__{}
+
   schema "cron_jobs" do
     field :name, :string
     field :job_type, :string

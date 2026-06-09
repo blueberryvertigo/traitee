@@ -33,12 +33,10 @@ defmodule Traitee.Cognition.QualityControl do
 
   @table :traitee_qc_tracker
 
-  defstruct [
-    enabled: true,
-    evaluations: 0,
-    rejections: 0,
-    approvals: 0
-  ]
+  defstruct enabled: true,
+            evaluations: 0,
+            rejections: 0,
+            approvals: 0
 
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -83,6 +81,16 @@ defmodule Traitee.Cognition.QualityControl do
   end
 
   @impl true
+  def handle_cast({:qc_result, :approved, _item}, state) do
+    {:noreply, %{state | approvals: state.approvals + 1}}
+  end
+
+  @impl true
+  def handle_cast({:qc_result, :rejected, _item}, state) do
+    {:noreply, %{state | rejections: state.rejections + 1}}
+  end
+
+  @impl true
   def handle_info({:workshop, :build_complete, %{project: name}}, state) do
     if state.enabled do
       Task.start(fn -> review_by_name(name) end)
@@ -109,16 +117,6 @@ defmodule Traitee.Cognition.QualityControl do
 
     schedule_check()
     {:noreply, state}
-  end
-
-  @impl true
-  def handle_info({:qc_result, :approved, _item}, state) do
-    {:noreply, %{state | approvals: state.approvals + 1}}
-  end
-
-  @impl true
-  def handle_info({:qc_result, :rejected, _item}, state) do
-    {:noreply, %{state | rejections: state.rejections + 1}}
   end
 
   @impl true
@@ -175,7 +173,10 @@ defmodule Traitee.Cognition.QualityControl do
     revisions = bump_revision({:project, project_id})
 
     if revisions > @max_project_revisions do
-      Logger.warning("[QC] Project '#{project.name}' hit max revisions (#{revisions}). Abandoning.")
+      Logger.warning(
+        "[QC] Project '#{project.name}' hit max revisions (#{revisions}). Abandoning."
+      )
+
       abandon_project(project, "Exceeded max revision attempts (#{@max_project_revisions})")
       notify_result(:rejected, {:project, project_id})
       throw(:abandoned)
@@ -317,43 +318,57 @@ defmodule Traitee.Cognition.QualityControl do
   # -- Research QC --
 
   defp audit_recent_research do
-    recent_research =
-      LTM.search_entities("research_topic")
-      |> Enum.take(5)
+    # Match on entity_type — search_entities/1 LIKE-matches name/description
+    # and never found "research_topic"-typed entities, so audits were a no-op.
+    recent_research = LTM.entities_by_type("research_topic", 5)
 
-    Enum.each(recent_research, fn entity ->
-      facts = LTM.get_facts(entity.id)
-      retries = revision_count({:research, entity.name})
-
-      if retries >= @max_research_retries do
-        Logger.debug("[QC] Research '#{entity.name}' at max retries — accepting as-is")
-      else
-        if length(facts) < 2 do
-          Logger.info("[QC] Research '#{entity.name}' is shallow (#{length(facts)} facts). Re-queuing.")
-          bump_revision({:research, entity.name})
-          Dream.enqueue_curiosity(entity.name, "QC: previous research was shallow, go deeper")
-          notify_result(:rejected, {:research, entity.name})
-        else
-          quality = assess_research_quality(entity, facts)
-
-          if quality < 0.4 and retries < @max_research_retries do
-            Logger.info("[QC] Research '#{entity.name}' quality #{quality} — re-queuing")
-            bump_revision({:research, entity.name})
-            Dream.enqueue_curiosity(entity.name, "QC: research quality low, needs more depth")
-            notify_result(:rejected, {:research, entity.name})
-          else
-            notify_result(:approved, {:research, entity.name})
-          end
-        end
-      end
-    end)
+    Enum.each(recent_research, &review_research_entity/1)
   rescue
     e -> Logger.warning("[QC] Research audit failed: #{inspect(e)}")
   end
 
+  defp review_research_entity(entity) do
+    facts = LTM.get_facts(entity.id)
+    retries = revision_count({:research, entity.name})
+
+    cond do
+      retries >= @max_research_retries ->
+        Logger.debug("[QC] Research '#{entity.name}' at max retries — accepting as-is")
+
+      length(facts) < 2 ->
+        Logger.info(
+          "[QC] Research '#{entity.name}' is shallow (#{length(facts)} facts). Re-queuing."
+        )
+
+        bump_revision({:research, entity.name})
+        Dream.enqueue_curiosity(entity.name, "QC: previous research was shallow, go deeper")
+        notify_result(:rejected, {:research, entity.name})
+
+      true ->
+        review_research_quality(entity, facts)
+    end
+  end
+
+  defp review_research_quality(entity, facts) do
+    quality = assess_research_quality(entity, facts)
+
+    if quality < 0.4 do
+      Logger.info("[QC] Research '#{entity.name}' quality #{quality} — re-queuing")
+      bump_revision({:research, entity.name})
+      Dream.enqueue_curiosity(entity.name, "QC: research quality low, needs more depth")
+      notify_result(:rejected, {:research, entity.name})
+    else
+      notify_result(:approved, {:research, entity.name})
+    end
+  end
+
   defp assess_research_quality(_entity, facts) do
     fact_count = length(facts)
-    avg_length = if fact_count > 0, do: Enum.sum(Enum.map(facts, &String.length(&1.content))) / fact_count, else: 0
+
+    avg_length =
+      if fact_count > 0,
+        do: Enum.sum(Enum.map(facts, &String.length(&1.content))) / fact_count,
+        else: 0
 
     fact_score = min(fact_count / 5.0, 1.0)
     depth_score = min(avg_length / 100.0, 1.0)
@@ -417,8 +432,11 @@ defmodule Traitee.Cognition.QualityControl do
     |> Jason.decode()
   end
 
+  # Reviews run inside Task.start — send(self(), ...) targeted the dying
+  # task, so the approval/rejection counters never moved. Cast to the
+  # QC GenServer instead.
   defp notify_result(verdict, item) do
-    send(self(), {:qc_result, verdict, item})
+    GenServer.cast(__MODULE__, {:qc_result, verdict, item})
   rescue
     _ -> :ok
   end

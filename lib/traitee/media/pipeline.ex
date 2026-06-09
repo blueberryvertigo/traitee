@@ -156,9 +156,14 @@ defmodule Traitee.Media.Pipeline do
   end
 
   defp transcribe_whisper(path) do
+    # Same key resolution as Traitee.LLM.OpenAI — previously this read the
+    # WhatsApp channel token, which both 401'd and leaked that credential.
     api_key =
-      Traitee.Config.get([:channels, :whatsapp, :token]) ||
-        System.get_env("OPENAI_API_KEY")
+      Application.get_env(:traitee, :openai_api_key) ||
+        case Traitee.Secrets.CredentialStore.load(:openai, "api_key") do
+          {:ok, key} -> key
+          :not_found -> nil
+        end
 
     if api_key do
       url = "https://api.openai.com/v1/audio/transcriptions"

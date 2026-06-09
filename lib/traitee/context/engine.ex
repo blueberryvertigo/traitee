@@ -322,7 +322,10 @@ defmodule Traitee.Context.Engine do
       # overhead bucket. Previously the tokens were silently added to
       # system_prompt_tokens which is a RESERVED base — the variable pool
       # still thought it had capacity for content already consumed.
-      {raw, Budget.record_usage(budget, :skills, tokens)}
+      # record_usage replaces, so add to the skills-summary usage recorded
+      # earlier instead of clobbering it.
+      prev = Map.get(budget.usage, :skills, 0)
+      {raw, Budget.record_usage(budget, :skills, prev + tokens)}
     end
   end
 
@@ -416,6 +419,9 @@ defmodule Traitee.Context.Engine do
             Traitee.Repo.get(Traitee.Memory.Schema.Summary, sid)
           end)
           |> Enum.reject(&is_nil/1)
+          # The vector index spans ALL sessions — drop hits from other
+          # sessions so private context never leaks across users.
+          |> Enum.filter(&(&1.session_id == session_id))
       end
 
     all_summaries =
@@ -604,7 +610,9 @@ defmodule Traitee.Context.Engine do
         text =
           entities
           |> Enum.take(3)
-          |> Enum.map_join("\n", fn r -> "- #{r.content}" end)
+          |> Enum.map(fn r -> resolve_content(r) end)
+          |> Enum.reject(&is_nil/1)
+          |> Enum.map_join("\n", fn c -> "- #{c}" end)
 
         parts ++ ["Entities:\n#{text}"]
       else
@@ -655,6 +663,13 @@ defmodule Traitee.Context.Engine do
     case Traitee.Repo.get(Traitee.Memory.Schema.Summary, id) do
       nil -> nil
       s -> s.content
+    end
+  end
+
+  defp resolve_content(%{source: :entity, id: id}) do
+    case Traitee.Repo.get(Traitee.Memory.Schema.Entity, id) do
+      nil -> nil
+      e -> "#{e.name}: #{e.description || "no description"}"
     end
   end
 

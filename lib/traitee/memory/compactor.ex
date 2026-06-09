@@ -18,7 +18,7 @@ defmodule Traitee.Memory.Compactor do
 
   @default_chunk_size 20
 
-  defstruct [:pending, :processing]
+  defstruct [:pending]
 
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -43,7 +43,7 @@ defmodule Traitee.Memory.Compactor do
 
   @impl true
   def init(_opts) do
-    {:ok, %__MODULE__{pending: %{}, processing: MapSet.new()}}
+    {:ok, %__MODULE__{pending: %{}}}
   end
 
   @impl true
@@ -80,8 +80,6 @@ defmodule Traitee.Memory.Compactor do
 
   @impl true
   def handle_info({:chunk_processed, session_id, result}, state) do
-    state = %{state | processing: MapSet.delete(state.processing, session_id)}
-
     case result do
       :ok ->
         Logger.debug("Compaction complete for session #{session_id}")
@@ -190,9 +188,13 @@ defmodule Traitee.Memory.Compactor do
       |> String.replace(~r/^```json\n?/, "")
       |> String.replace(~r/\n?```$/, "")
 
-    Jason.decode(content)
-  rescue
-    _ -> {:ok, %{"summary" => content, "entities" => []}}
+    # Jason.decode/1 returns {:error, _} rather than raising. Non-JSON output
+    # must still be kept as a plain summary — the source messages were already
+    # evicted from STM, so discarding the chunk would lose them permanently.
+    case Jason.decode(content) do
+      {:ok, parsed} -> {:ok, parsed}
+      {:error, _} -> {:ok, %{"summary" => content, "entities" => []}}
+    end
   end
 
   defp generate_embedding(text) do
@@ -212,42 +214,60 @@ defmodule Traitee.Memory.Compactor do
   end
 
   defp store_entities(entities, summary_id, session_id) do
-    Enum.each(entities, fn entity_data ->
-      name = entity_data["name"]
-      type = entity_data["type"] || "other"
-      facts = entity_data["facts"] || []
-      relations = entity_data["relations"] || []
+    Enum.each(entities, &store_entity(&1, summary_id, session_id))
+  end
 
-      {:ok, entity} = LTM.upsert_entity(name, type)
+  # A missing name or a failed upsert must not crash the whole chunk task —
+  # skip the bad entity and keep processing the rest.
+  defp store_entity(entity_data, summary_id, session_id) do
+    name = entity_data["name"]
+    type = entity_data["type"] || "other"
 
-      Enum.each(facts, fn fact_content ->
-        opts = [
-          confidence: @compactor_confidence,
-          metadata: %{
-            "source" => "compactor",
-            "session_id" => session_id
-          }
-        ]
+    with true <- is_binary(name) and name != "",
+         {:ok, entity} <- LTM.upsert_entity(name, type) do
+      store_facts(entity, entity_data["facts"] || [], summary_id, session_id)
+      store_relations(entity, entity_data["relations"] || [])
+    else
+      other ->
+        Logger.debug("Skipping entity #{inspect(name)}: #{inspect(other)}")
+    end
+  end
 
-        case LTM.add_fact(entity.id, fact_content, "extracted", summary_id, opts) do
-          {:ok, fact} ->
-            BatchEmbedder.enqueue(:fact, fact.id, fact_content)
+  defp store_facts(entity, facts, summary_id, session_id) do
+    Enum.each(facts, fn fact_content ->
+      opts = [
+        confidence: @compactor_confidence,
+        metadata: %{
+          "source" => "compactor",
+          "session_id" => session_id
+        }
+      ]
 
-          _ ->
-            :ok
+      case LTM.add_fact(entity.id, fact_content, "extracted", summary_id, opts) do
+        {:ok, fact} ->
+          BatchEmbedder.enqueue(:fact, fact.id, fact_content)
+
+        _ ->
+          :ok
+      end
+    end)
+  end
+
+  defp store_relations(entity, relations) do
+    Enum.each(relations, fn rel ->
+      target_name = rel["target"] || rel[:target]
+      rel_type = rel["relation_type"] || rel[:relation_type]
+      desc = rel["description"] || rel[:description]
+
+      if is_binary(target_name) and target_name != "" and rel_type do
+        case LTM.upsert_entity(target_name, "other") do
+          {:ok, target} ->
+            LTM.add_relation(entity.id, target.id, rel_type, desc)
+
+          {:error, reason} ->
+            Logger.debug("Skipping relation target #{inspect(target_name)}: #{inspect(reason)}")
         end
-      end)
-
-      Enum.each(relations, fn rel ->
-        target_name = rel["target"] || rel[:target]
-        rel_type = rel["relation_type"] || rel[:relation_type]
-        desc = rel["description"] || rel[:description]
-
-        if target_name && rel_type do
-          {:ok, target} = LTM.upsert_entity(target_name, "other")
-          LTM.add_relation(entity.id, target.id, rel_type, desc)
-        end
-      end)
+      end
     end)
   end
 

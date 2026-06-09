@@ -1,14 +1,24 @@
 defmodule Traitee.Cron.Parser do
   @moduledoc "Cron expression parser (5-field: minute hour day month weekday)."
 
-  defstruct [:minute, :hour, :day, :month, :weekday]
+  defstruct [
+    :minute,
+    :hour,
+    :day,
+    :month,
+    :weekday,
+    day_restricted?: false,
+    weekday_restricted?: false
+  ]
 
   @type t :: %__MODULE__{
           minute: [non_neg_integer()],
           hour: [non_neg_integer()],
           day: [non_neg_integer()],
           month: [non_neg_integer()],
-          weekday: [non_neg_integer()]
+          weekday: [non_neg_integer()],
+          day_restricted?: boolean(),
+          weekday_restricted?: boolean()
         }
 
   @ranges %{
@@ -29,12 +39,22 @@ defmodule Traitee.Cron.Parser do
       fields = [:minute, :hour, :day, :month, :weekday]
 
       with {:ok, parsed} <- parse_fields(Enum.zip(fields, parts)) do
-        {:ok, struct(__MODULE__, parsed)}
+        expr = struct(__MODULE__, parsed)
+
+        # Standard cron: when BOTH day-of-month and day-of-week are
+        # restricted (neither expands to the full range), they combine
+        # with OR; otherwise with AND. Record restriction at parse time.
+        {:ok,
+         %{
+           expr
+           | day_restricted?: expr.day != Enum.to_list(@ranges.day),
+             weekday_restricted?: expr.weekday != Enum.to_list(@ranges.weekday)
+         }}
       end
     end
   end
 
-  @spec next_occurrence(t(), DateTime.t()) :: DateTime.t()
+  @spec next_occurrence(t(), DateTime.t()) :: {:ok, DateTime.t()} | {:error, :unsatisfiable}
   def next_occurrence(%__MODULE__{} = expr, %DateTime{} = from) do
     from
     |> DateTime.add(60, :second)
@@ -47,9 +67,19 @@ defmodule Traitee.Cron.Parser do
   def matches?(%__MODULE__{} = expr, %DateTime{} = dt) do
     dt.minute in expr.minute and
       dt.hour in expr.hour and
-      dt.day in expr.day and
       dt.month in expr.month and
-      weekday_to_cron(Date.day_of_week(dt)) in expr.weekday
+      day_matches?(expr, dt)
+  end
+
+  defp day_matches?(expr, dt) do
+    dom = dt.day in expr.day
+    dow = weekday_to_cron(Date.day_of_week(dt)) in expr.weekday
+
+    if expr.day_restricted? and expr.weekday_restricted? do
+      dom or dow
+    else
+      dom and dow
+    end
   end
 
   # -- Private --
@@ -118,8 +148,8 @@ defmodule Traitee.Cron.Parser do
     end
   end
 
-  defp advance(dt, _expr, iterations) when iterations > 525_960 do
-    raise "could not find next occurrence within a year from #{DateTime.to_iso8601(dt)}"
+  defp advance(_dt, _expr, iterations) when iterations > 525_960 do
+    {:error, :unsatisfiable}
   end
 
   defp advance(dt, expr, iterations) do
@@ -127,10 +157,7 @@ defmodule Traitee.Cron.Parser do
       dt.month not in expr.month ->
         dt |> next_month() |> advance(expr, iterations + 1)
 
-      dt.day not in expr.day ->
-        dt |> next_day() |> advance(expr, iterations + 1)
-
-      weekday_to_cron(Date.day_of_week(dt)) not in expr.weekday ->
+      not day_matches?(expr, dt) ->
         dt |> next_day() |> advance(expr, iterations + 1)
 
       dt.hour not in expr.hour ->
@@ -140,7 +167,7 @@ defmodule Traitee.Cron.Parser do
         dt |> next_minute() |> advance(expr, iterations + 1)
 
       true ->
-        dt
+        {:ok, dt}
     end
   end
 

@@ -16,10 +16,21 @@ defmodule Traitee.Session do
         {:ok, pid}
 
       [] ->
-        DynamicSupervisor.start_child(
-          Traitee.Session.Supervisor,
-          {Server, session_id: session_id, channel: channel_type}
-        )
+        case DynamicSupervisor.start_child(
+               Traitee.Session.Supervisor,
+               {Server, session_id: session_id, channel: channel_type}
+             ) do
+          {:ok, pid} ->
+            {:ok, pid}
+
+          # Concurrent first messages can race the Registry lookup — the
+          # loser must reuse the winner's pid, not drop the message.
+          {:error, {:already_started, pid}} ->
+            {:ok, pid}
+
+          error ->
+            error
+        end
     end
   end
 

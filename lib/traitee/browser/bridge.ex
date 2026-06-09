@@ -17,7 +17,7 @@ defmodule Traitee.Browser.Bridge do
 
   @doc "Send a command to the browser bridge. Returns {:ok, result} or {:error, reason}."
   def call(action, params \\ %{}, timeout \\ @default_timeout) do
-    GenServer.call(__MODULE__, {:command, action, params}, timeout + 5_000)
+    GenServer.call(__MODULE__, {:command, action, params, timeout}, timeout + 5_000)
   end
 
   @doc "Check if the bridge process is running."
@@ -40,7 +40,7 @@ defmodule Traitee.Browser.Bridge do
   end
 
   @impl true
-  def handle_call({:command, action, params}, from, state) do
+  def handle_call({:command, action, params, timeout}, from, state) do
     state =
       try do
         ensure_port(state)
@@ -61,7 +61,7 @@ defmodule Traitee.Browser.Bridge do
       try do
         Port.command(state.port, command <> "\n")
 
-        timer_ref = Process.send_after(self(), {:timeout, cmd_id}, @default_timeout)
+        timer_ref = Process.send_after(self(), {:timeout, cmd_id}, timeout)
         pending = Map.put(state.pending, cmd_id, {from, timer_ref})
 
         {:noreply, %{state | pending: pending}}
@@ -141,23 +141,51 @@ defmodule Traitee.Browser.Bridge do
 
   @ready_timeout 5_000
 
+  # Accumulate output line-by-line until the ready JSON appears — the
+  # ready line may be split across packets or preceded by npm/node
+  # warnings, so decoding a single raw chunk is not enough.
   defp wait_for_ready(port) do
-    receive do
-      {^port, {:data, data}} ->
-        case Jason.decode(data) do
-          {:ok, %{"id" => 0, "ok" => true}} -> :ok
-          _ -> {:error, "unexpected startup message: #{inspect(data)}"}
-        end
+    deadline = System.monotonic_time(:millisecond) + @ready_timeout
+    wait_for_ready(port, "", deadline)
+  end
 
-      {^port, {:exit_status, code}} ->
-        {:error, "node exited with code #{code} during startup"}
+  defp wait_for_ready(port, buffer, deadline) do
+    remaining = deadline - System.monotonic_time(:millisecond)
 
-      {:EXIT, ^port, reason} ->
-        {:error, "port crashed during startup: #{inspect(reason)}"}
-    after
-      @ready_timeout ->
-        {:error, "bridge did not send ready signal within #{@ready_timeout}ms"}
+    if remaining <= 0 do
+      {:error, "bridge did not send ready signal within #{@ready_timeout}ms"}
+    else
+      receive do
+        {^port, {:data, data}} ->
+          buffer = buffer <> to_string(data)
+          {lines, rest} = split_lines(buffer)
+
+          case scan_ready_lines(lines) do
+            :ready -> :ok
+            {:error, reason} -> {:error, reason}
+            :not_found -> wait_for_ready(port, rest, deadline)
+          end
+
+        {^port, {:exit_status, code}} ->
+          {:error, "node exited with code #{code} during startup"}
+
+        {:EXIT, ^port, reason} ->
+          {:error, "port crashed during startup: #{inspect(reason)}"}
+      after
+        remaining ->
+          {:error, "bridge did not send ready signal within #{@ready_timeout}ms"}
+      end
     end
+  end
+
+  defp scan_ready_lines(lines) do
+    Enum.find_value(lines, :not_found, fn line ->
+      case Jason.decode(String.trim(line)) do
+        {:ok, %{"id" => 0, "ok" => true}} -> :ready
+        {:ok, %{"id" => 0} = other} -> {:error, "unexpected startup message: #{inspect(other)}"}
+        _ -> nil
+      end
+    end)
   end
 
   defp safely_close_port(port) do

@@ -3,46 +3,42 @@ defmodule Traitee.Channels.Typing do
 
   @refresh_ms 5_000
 
-  @spec start(atom(), String.t()) :: reference()
+  @doc """
+  Starts a typing-indicator loop and returns its pid. The loop is linked to
+  the calling process and stops on its own once the caller dies, so call
+  `start/2` from the process that handles the response (and pass the returned
+  pid lexically to `stop/1` — never via the process dictionary, which doesn't
+  cross process boundaries).
+  """
+  @spec start(atom(), String.t()) :: pid()
   def start(channel_type, target) do
-    ref = make_ref()
     parent = self()
 
-    pid =
-      spawn_link(fn ->
-        send_typing(channel_type, target)
-        typing_loop(channel_type, target, parent, ref)
-      end)
-
-    Process.put({__MODULE__, ref}, pid)
-    ref
+    spawn_link(fn ->
+      send_typing(channel_type, target)
+      typing_loop(channel_type, target, parent)
+    end)
   end
 
-  @spec stop(reference()) :: :ok
-  def stop(ref) do
-    case Process.get({__MODULE__, ref}) do
-      pid when is_pid(pid) ->
-        Process.unlink(pid)
-        Process.exit(pid, :shutdown)
-        Process.delete({__MODULE__, ref})
-
-      _ ->
-        :ok
-    end
-
+  @spec stop(pid() | nil) :: :ok
+  def stop(pid) when is_pid(pid) do
+    Process.unlink(pid)
+    Process.exit(pid, :shutdown)
     :ok
   end
 
+  def stop(_), do: :ok
+
   # -- Private --
 
-  defp typing_loop(channel_type, target, parent, ref) do
+  defp typing_loop(channel_type, target, parent) do
     receive do
       :stop -> :ok
     after
       @refresh_ms ->
         if Process.alive?(parent) do
           send_typing(channel_type, target)
-          typing_loop(channel_type, target, parent, ref)
+          typing_loop(channel_type, target, parent)
         end
     end
   end

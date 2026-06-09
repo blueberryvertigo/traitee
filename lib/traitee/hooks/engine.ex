@@ -2,6 +2,8 @@ defmodule Traitee.Hooks.Engine do
   @moduledoc "Event hook system for extensible automation."
   use GenServer
 
+  require Logger
+
   @type hook_point ::
           :before_message
           | :after_message
@@ -48,14 +50,35 @@ defmodule Traitee.Hooks.Engine do
 
   @impl true
   def init(_opts) do
+    # Re-register builtins after (re)start: registrations live in this
+    # process's state, so a crash wiped them and they were only restored
+    # at app boot. Done via a post-init message + Task so the registration
+    # calls don't deadlock against init.
+    send(self(), :register_builtins)
     {:ok, %{hooks: %{}}}
+  end
+
+  @impl true
+  def handle_info(:register_builtins, state) do
+    Task.start(fn ->
+      try do
+        Traitee.Hooks.Builtin.register_all()
+      rescue
+        e -> Logger.warning("Builtin hook registration failed: #{Exception.message(e)}")
+      end
+    end)
+
+    {:noreply, state}
   end
 
   @impl true
   def handle_call({:register, hook_point, name, handler}, _from, state) do
     hooks = state.hooks
     existing = Map.get(hooks, hook_point, [])
-    updated = existing ++ [{name, handler}]
+    # Replace any handler with the same name so repeated registration
+    # (e.g. Builtin.register_all at boot AND after a restart) stays
+    # idempotent instead of stacking duplicates.
+    updated = Enum.reject(existing, fn {n, _} -> n == name end) ++ [{name, handler}]
     {:reply, :ok, %{state | hooks: Map.put(hooks, hook_point, updated)}}
   end
 
@@ -95,14 +118,18 @@ defmodule Traitee.Hooks.Engine do
         {:halt, reason}
 
       other ->
-        require Logger
         Logger.warning("Hook #{inspect(name)} returned unexpected: #{inspect(other)}")
         run_chain(rest, context)
     end
   rescue
     e ->
-      require Logger
       Logger.error("Hook #{inspect(name)} crashed: #{Exception.message(e)}")
+      run_chain(rest, context)
+  catch
+    # A handler that throws or exits would otherwise kill the Engine,
+    # taking every registered hook down with it.
+    kind, reason ->
+      Logger.error("Hook #{inspect(name)} #{kind}: #{inspect(reason)}")
       run_chain(rest, context)
   end
 end

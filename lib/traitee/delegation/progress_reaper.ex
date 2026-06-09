@@ -1,6 +1,7 @@
 defmodule Traitee.Delegation.ProgressReaper do
   @moduledoc """
-  Periodic sweeper for stale entries in `Traitee.Delegation.Progress`.
+  Periodic sweeper for stale entries in `Traitee.Delegation.Progress`
+  and `Traitee.Tools.TaskTracker`.
 
   Without this, crashed subagents or sessions that died between a
   progress update and a clear_session/1 left entries in ETS forever.
@@ -8,6 +9,7 @@ defmodule Traitee.Delegation.ProgressReaper do
   use GenServer
 
   alias Traitee.Delegation.Progress
+  alias Traitee.Tools.TaskTracker
 
   @interval_ms 5 * 60 * 1_000
 
@@ -24,6 +26,7 @@ defmodule Traitee.Delegation.ProgressReaper do
   @impl true
   def handle_info(:reap, state) do
     Progress.reap_stale()
+    TaskTracker.prune_stale()
     schedule()
     {:noreply, state}
   end

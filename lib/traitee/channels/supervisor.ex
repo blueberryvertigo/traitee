@@ -27,7 +27,9 @@ defmodule Traitee.Channels.Supervisor do
     config = Traitee.Config.get([:channels, :discord])
 
     if config[:enabled] do
-      [Traitee.Channels.Discord | children]
+      # Discord must start first: it sets the Nostrum token and boots the
+      # gateway before the consumer joins the consumer group.
+      [Traitee.Channels.Discord, Traitee.Channels.DiscordConsumer | children]
     else
       children
     end

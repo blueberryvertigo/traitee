@@ -70,12 +70,14 @@ defmodule Traitee.Cron.Scheduler do
       Schema
       |> where([j], j.enabled == true and (is_nil(j.next_run_at) or j.next_run_at <= ^now))
       |> Repo.all()
-      |> Enum.each(&execute_and_reschedule/1)
+      |> Enum.each(&safe_execute_and_reschedule/1)
 
       reap_sessions()
     rescue
-      e in [Exqlite.Error] ->
-        Logger.debug("Scheduler tick skipped (table not ready): #{Exception.message(e)}")
+      # Broad rescue: any exception escaping the tick would crash the
+      # scheduler into a restart/re-execute loop.
+      e ->
+        Logger.warning("Scheduler tick failed: #{Exception.message(e)}")
     end
 
     schedule_tick()
@@ -88,38 +90,83 @@ defmodule Traitee.Cron.Scheduler do
     Process.send_after(self(), :tick, @tick_interval_ms)
   end
 
+  # Isolate each job so one bad job can't kill the whole tick. On error,
+  # disable the job — leaving it due would re-execute it every 15s.
+  defp safe_execute_and_reschedule(job) do
+    execute_and_reschedule(job)
+  rescue
+    e ->
+      Logger.error("Cron job #{job.name} scheduling failed, disabling: #{Exception.message(e)}")
+      disable_job_on_error(job, Exception.message(e))
+  end
+
   defp execute_and_reschedule(job) do
-    execute_job(job)
-
     now = DateTime.utc_now()
+    updates = reschedule_updates(job, now)
 
-    updates =
-      case job.job_type do
-        "at" ->
-          %{enabled: false, last_run_at: now, run_count: job.run_count + 1}
+    # Persist next_run_at BEFORE executing: if execution crashes the
+    # process, the job must not be due again on the next tick.
+    case job |> Schema.changeset(updates) |> Repo.update() do
+      {:ok, updated} -> dispatch_job(updated)
+      {:error, _changeset} -> dispatch_job(job)
+    end
+  end
 
-        "every" ->
-          interval_ms = parse_interval(job.schedule)
-          next = DateTime.add(now, interval_ms, :millisecond)
-          %{last_run_at: now, next_run_at: next, run_count: job.run_count + 1}
+  # Execute asynchronously — Session.Server.send_message can block for
+  # minutes, which used to stall the tick and serialize all due jobs.
+  defp dispatch_job(job) do
+    Task.start(fn -> execute_job(job) end)
+  end
 
-        "cron" ->
-          case Parser.parse(job.schedule) do
-            {:ok, expr} ->
-              next = Parser.next_occurrence(expr, now)
-              %{last_run_at: now, next_run_at: next, run_count: job.run_count + 1}
+  defp reschedule_updates(job, now) do
+    case job.job_type do
+      "at" ->
+        %{enabled: false, last_run_at: now, run_count: job.run_count + 1}
 
-            {:error, _} ->
-              %{
-                last_run_at: now,
-                run_count: job.run_count + 1,
-                consecutive_errors: job.consecutive_errors + 1,
-                last_error: "invalid cron expression"
-              }
-          end
-      end
+      "every" ->
+        interval_ms = parse_interval(job.schedule)
+        next = DateTime.add(now, interval_ms, :millisecond)
+        %{last_run_at: now, next_run_at: next, run_count: job.run_count + 1}
 
-    job |> Schema.changeset(updates) |> Repo.update()
+      "cron" ->
+        cron_reschedule_updates(job, now)
+    end
+  end
+
+  defp cron_reschedule_updates(job, now) do
+    with {:ok, expr} <- Parser.parse(job.schedule),
+         {:ok, next} <- Parser.next_occurrence(expr, now) do
+      %{last_run_at: now, next_run_at: next, run_count: job.run_count + 1}
+    else
+      {:error, :unsatisfiable} ->
+        %{
+          enabled: false,
+          last_run_at: now,
+          run_count: job.run_count + 1,
+          consecutive_errors: job.consecutive_errors + 1,
+          last_error: "unsatisfiable cron expression"
+        }
+
+      {:error, _} ->
+        %{
+          last_run_at: now,
+          run_count: job.run_count + 1,
+          consecutive_errors: job.consecutive_errors + 1,
+          last_error: "invalid cron expression"
+        }
+    end
+  end
+
+  defp disable_job_on_error(job, message) do
+    job
+    |> Schema.changeset(%{
+      enabled: false,
+      consecutive_errors: job.consecutive_errors + 1,
+      last_error: message
+    })
+    |> Repo.update()
+  rescue
+    _ -> :ok
   end
 
   defp execute_job(job) do
@@ -196,8 +243,10 @@ defmodule Traitee.Cron.Scheduler do
   end
 
   defp compute_next_run(%{job_type: "cron", schedule: schedule}) do
-    case Parser.parse(schedule) do
-      {:ok, expr} -> Parser.next_occurrence(expr, DateTime.utc_now())
+    with {:ok, expr} <- Parser.parse(schedule),
+         {:ok, next} <- Parser.next_occurrence(expr, DateTime.utc_now()) do
+      next
+    else
       _ -> nil
     end
   end

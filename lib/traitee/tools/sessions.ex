@@ -42,8 +42,8 @@ defmodule Traitee.Tools.Sessions do
   end
 
   @impl true
-  def execute(%{"action" => "list"}) do
-    sessions = InterSession.list_sessions()
+  def execute(%{"action" => "list"} = args) do
+    sessions = InterSession.list_sessions(args["_session_id"])
 
     if sessions == [] do
       {:ok, "No active sessions."}
@@ -63,7 +63,7 @@ defmodule Traitee.Tools.Sessions do
   def execute(%{"action" => "history", "session_id" => sid} = args) do
     limit = args["limit"] || 20
 
-    case InterSession.get_history(sid, limit) do
+    case InterSession.get_history(sid, limit, current_session_id: args["_session_id"]) do
       {:ok, messages} ->
         formatted =
           Enum.map_join(messages, "\n", fn msg ->
@@ -94,9 +94,6 @@ defmodule Traitee.Tools.Sessions do
     hop = args["_inter_session_depth"] || 0
 
     case InterSession.send_to_session(from, sid, msg, hop: hop) do
-      :ok ->
-        {:ok, "Message sent to session #{sid}."}
-
       {:ok, _response} ->
         {:ok, "Message sent to session #{sid}."}
 

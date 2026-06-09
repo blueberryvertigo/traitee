@@ -138,7 +138,11 @@ defmodule Traitee.Config.Validator do
     is_nil(val) or val == ""
   end
 
-  defp get_in_map(map, []) when is_map(map), do: map
+  # Note: the empty-path clause must accept ANY value, not just maps —
+  # leaf values (strings, numbers) land here at the end of the recursion.
+  # Requiring is_map/1 made every leaf lookup return nil, so missing_key?
+  # reported every configured value as missing.
+  defp get_in_map(val, []), do: val
   defp get_in_map(map, [k | rest]) when is_map(map), do: get_in_map(Map.get(map, k), rest)
   defp get_in_map(_, _), do: nil
 

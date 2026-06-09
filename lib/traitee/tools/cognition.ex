@@ -94,7 +94,9 @@ defmodule Traitee.Tools.Cognition do
 
   def execute(%{"action" => "dream_now"}) do
     Dream.dream_now()
-    {:ok, "Dream cycle triggered. Running consolidation, research, ideation, and reflection in the background."}
+
+    {:ok,
+     "Dream cycle triggered. Running consolidation, research, ideation, and reflection in the background."}
   end
 
   def execute(%{"action" => "workshop_status"}) do
@@ -128,7 +130,9 @@ defmodule Traitee.Tools.Cognition do
 
   def execute(%{"action" => "enqueue_curiosity", "topic" => topic}) when is_binary(topic) do
     Dream.enqueue_curiosity(topic)
-    {:ok, "Queued '#{topic}' for background research. It will be investigated during the next dream cycle."}
+
+    {:ok,
+     "Queued '#{topic}' for background research. It will be investigated during the next dream cycle."}
   end
 
   def execute(%{"action" => "enqueue_curiosity"}) do
@@ -136,7 +140,8 @@ defmodule Traitee.Tools.Cognition do
   end
 
   def execute(_args) do
-    {:error, "Unknown action. Use: overview, dream_status, workshop_status, workshop_list, interests, desires, profile, metacognition, enqueue_curiosity, dream_now"}
+    {:error,
+     "Unknown action. Use: overview, dream_status, workshop_status, workshop_list, interests, desires, profile, metacognition, enqueue_curiosity, dream_now"}
   end
 
   # -- Formatters --
@@ -153,6 +158,7 @@ defmodule Traitee.Tools.Cognition do
         |> Enum.map_join("\n", fn {i, n} ->
           score = Float.round(Interest.score(i), 3)
           trend = i[:trend] || :stable
+
           "  #{n}. #{i.topic} — score: #{score}, depth: #{i.depth}, trend: #{trend}, seen: #{i.frequency}x"
         end)
 

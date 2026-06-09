@@ -30,10 +30,13 @@ defmodule Traitee.Memory.VectorTest do
   end
 
   describe "store/3 and get_embedding/2" do
-    test "stores and retrieves an embedding" do
+    test "stores and retrieves a unit-normalized embedding" do
       emb = fake_embedding(8)
       assert Vector.store(:summary, 1, emb) == :ok
-      assert {:ok, ^emb} = Vector.get_embedding(:summary, 1)
+      assert {:ok, stored} = Vector.get_embedding(:summary, 1)
+      assert length(stored) == 8
+      norm = :math.sqrt(Enum.reduce(stored, 0.0, fn x, acc -> acc + x * x end))
+      assert_in_delta norm, 1.0, 1.0e-9
     end
 
     test "returns :not_found for missing embedding" do
@@ -45,7 +48,12 @@ defmodule Traitee.Memory.VectorTest do
       emb2 = fake_embedding(8)
       Vector.store(:summary, 1, emb1)
       Vector.store(:summary, 1, emb2)
-      assert {:ok, ^emb2} = Vector.get_embedding(:summary, 1)
+      assert {:ok, stored} = Vector.get_embedding(:summary, 1)
+
+      expected = normalize_embedding(emb2)
+
+      Enum.zip(stored, expected)
+      |> Enum.each(fn {s, e} -> assert_in_delta s, e, 1.0e-9 end)
     end
 
     test "handles nil embedding gracefully" do
@@ -109,6 +117,14 @@ defmodule Traitee.Memory.VectorTest do
 
     test "returns empty list when no vectors stored" do
       assert Vector.search(fake_embedding(8), 5) == []
+    end
+
+    test "identical vectors score ~1.0 even when stored un-normalized" do
+      emb = Enum.map(1..8, &(&1 * 1.0))
+      Vector.store(:fact, "dotcheck", emb)
+
+      assert [{:fact, "dotcheck", score}] = Vector.search(emb, 1, source_type: :fact)
+      assert_in_delta score, 1.0, 1.0e-6
     end
   end
 

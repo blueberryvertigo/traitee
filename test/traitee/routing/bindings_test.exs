@@ -73,6 +73,17 @@ defmodule Traitee.Routing.BindingsTest do
       assert Bindings.match([binding], %{channel_type: :discord}) == nil
     end
 
+    test "channel binding with nil match_value (unknown channel name) matches nothing" do
+      binding = %Bindings{
+        agent_id: "broken",
+        match_type: :channel,
+        match_value: nil,
+        priority: 3
+      }
+
+      assert Bindings.match([binding], %{channel_type: :discord, sender_id: "u1"}) == nil
+    end
+
     test "returns first matching binding (priority order)" do
       bindings = [
         %Bindings{agent_id: "peer", match_type: :peer, match_value: "user1", priority: 0},

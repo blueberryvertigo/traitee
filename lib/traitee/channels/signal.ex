@@ -176,5 +176,9 @@ defmodule Traitee.Channels.Signal do
     end
   end
 
+  defp handle_signal_message(%{"error" => error}) do
+    Logger.warning("signal-cli JSON-RPC error: #{inspect(error)}")
+  end
+
   defp handle_signal_message(_), do: :ok
 end

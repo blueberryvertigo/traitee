@@ -111,17 +111,7 @@ defmodule Traitee.Cognition.UserModel do
 
       Task.Supervisor.start_child(
         Traitee.Delegation.TaskSupervisor,
-        fn ->
-          Traitee.Process.Lanes.with_lane(:embed, 30_000, fn ->
-            case Interest.extract(user_message, context_messages) do
-              {:ok, signals} ->
-                GenServer.cast(__MODULE__, {:merge_signals, owner_id, signals})
-
-              {:error, reason} ->
-                Logger.debug("Interest extraction failed: #{inspect(reason)}")
-            end
-          end)
-        end,
+        fn -> extract_and_merge(owner_id, user_message, context_messages) end,
         restart: :temporary
       )
 
@@ -201,6 +191,18 @@ defmodule Traitee.Cognition.UserModel do
   def handle_info(_msg, state), do: {:noreply, state}
 
   # -- Private --
+
+  defp extract_and_merge(owner_id, user_message, context_messages) do
+    Traitee.Process.Lanes.with_lane(:embed, 30_000, fn ->
+      case Interest.extract(user_message, context_messages) do
+        {:ok, signals} ->
+          GenServer.cast(__MODULE__, {:merge_signals, owner_id, signals})
+
+        {:error, reason} ->
+          Logger.debug("Interest extraction failed: #{inspect(reason)}")
+      end
+    end)
+  end
 
   defp should_observe?(state, owner_id) do
     last = Map.get(state.observation_throttle || %{}, owner_id, 0)
@@ -317,30 +319,29 @@ defmodule Traitee.Cognition.UserModel do
   end
 
   defp load_from_db do
-    try do
-      Traitee.Cognition.Schema.UserInterest
-      |> Repo.all()
-      |> Enum.group_by(& &1.owner_id)
-      |> Enum.each(fn {owner_id, records} ->
-        interests =
-          Map.new(records, fn r ->
-            {r.topic,
-             %{
-               topic: r.topic,
-               enthusiasm: r.enthusiasm_score || 0.5,
-               depth: r.depth || "shallow",
-               frequency: r.frequency || 1,
-               first_seen: r.first_seen || r.inserted_at,
-               last_seen: r.last_seen || r.inserted_at,
-               trend: String.to_existing_atom(r.trend || "stable")
-             }}
-          end)
+    Traitee.Cognition.Schema.UserInterest
+    |> Repo.all()
+    |> Enum.group_by(& &1.owner_id)
+    |> Enum.each(fn {owner_id, records} ->
+      model = %{default_model(owner_id) | interests: interests_from_records(records)}
+      :ets.insert(@table, {owner_id, model})
+    end)
+  rescue
+    _ -> :ok
+  end
 
-        model = %{default_model(owner_id) | interests: interests}
-        :ets.insert(@table, {owner_id, model})
-      end)
-    rescue
-      _ -> :ok
-    end
+  defp interests_from_records(records) do
+    Map.new(records, fn r ->
+      {r.topic,
+       %{
+         topic: r.topic,
+         enthusiasm: r.enthusiasm_score || 0.5,
+         depth: r.depth || "shallow",
+         frequency: r.frequency || 1,
+         first_seen: r.first_seen || r.inserted_at,
+         last_seen: r.last_seen || r.inserted_at,
+         trend: String.to_existing_atom(r.trend || "stable")
+       }}
+    end)
   end
 end

@@ -11,18 +11,18 @@ defmodule Traitee.Channels.Streaming do
   @spec stream_to_channel(atom(), String.t(), reference()) :: :ok
   def stream_to_channel(channel_type, target, stream_ref) do
     typing_ref = Typing.start(channel_type, target)
-    buffer = collect_stream(stream_ref, channel_type, target, "", nil, 0)
+    {buffer, msg_id} = collect_stream(stream_ref, channel_type, target, "", nil, 0)
     Typing.stop(typing_ref)
 
-    send_final(channel_type, target, buffer)
+    send_final(channel_type, target, buffer, msg_id)
     :ok
   end
 
-  @spec start_typing(atom(), String.t()) :: reference()
+  @spec start_typing(atom(), String.t()) :: pid()
   defdelegate start_typing(channel_type, target), to: Typing, as: :start
 
-  @spec stop_typing(reference()) :: :ok
-  defdelegate stop_typing(ref), to: Typing, as: :stop
+  @spec stop_typing(pid() | nil) :: :ok
+  defdelegate stop_typing(pid), to: Typing, as: :stop
 
   # -- Private --
 
@@ -42,15 +42,15 @@ defmodule Traitee.Channels.Streaming do
         collect_stream(stream_ref, channel_type, target, new_buffer, msg_id, now)
 
       {:done, ^stream_ref} ->
-        buffer
+        {buffer, msg_id}
 
       {:error, ^stream_ref, reason} ->
         Logger.warning("Stream error: #{inspect(reason)}")
-        buffer
+        {buffer, msg_id}
     after
       120_000 ->
         Logger.warning("Stream timeout for #{channel_type}:#{target}")
-        buffer
+        {buffer, msg_id}
     end
   end
 
@@ -89,11 +89,19 @@ defmodule Traitee.Channels.Streaming do
 
   defp push_update(_channel, _target, _text, msg_id), do: msg_id
 
-  defp send_final(:webchat, target, text) do
+  defp send_final(:webchat, target, text, _msg_id) do
     Phoenix.PubSub.broadcast(Traitee.PubSub, "webchat:#{target}", {:stream_done, text})
   end
 
-  defp send_final(channel_type, target, text) do
+  # When a message was already created by progressive edits, finalize it
+  # in place instead of sending the full buffer again as a new message.
+  defp send_final(channel_type, target, text, msg_id)
+       when channel_type in [:discord, :telegram] and not is_nil(msg_id) do
+    edit_channel_message(channel_type, target, msg_id, text)
+    :ok
+  end
+
+  defp send_final(channel_type, target, text, _msg_id) do
     outbound = %{
       text: text,
       channel_type: channel_type,

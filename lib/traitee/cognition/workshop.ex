@@ -21,6 +21,8 @@ defmodule Traitee.Cognition.Workshop do
 
   @build_check_ms 5 * 60_000
   @workshop_dir "workshop"
+  @max_build_attempts 3
+  @retry_cooldown_seconds 3600
 
   defstruct [
     :current_project,
@@ -147,11 +149,14 @@ defmodule Traitee.Cognition.Workshop do
   end
 
   defp pick_from_db(state) do
-    case WorkshopProject
-         |> where([p], p.status == "ideating")
-         |> order_by([p], asc: p.inserted_at)
-         |> limit(1)
-         |> Repo.one() do
+    candidates =
+      WorkshopProject
+      |> where([p], p.status == "ideating")
+      |> order_by([p], asc: p.inserted_at)
+      |> limit(5)
+      |> Repo.all()
+
+    case Enum.find(candidates, fn project -> not recently_failed?(project) end) do
       nil ->
         state
 
@@ -164,21 +169,32 @@ defmodule Traitee.Cognition.Workshop do
     _ -> state
   end
 
-  defp build_project(project_id) do
-    try do
-      do_build_project(project_id)
-    rescue
-      e ->
-        Logger.warning("[Workshop] Build crashed: #{inspect(e)}")
-        update_status(project_id, "ideating")
-    catch
-      :not_found -> :ok
-    after
-      # ALWAYS release the current_project lock, even on crash. Previously a
-      # crash between Repo.update and this cast left the Workshop wedged —
-      # current_project stuck non-nil forever, so no new builds ever ran.
-      GenServer.cast(__MODULE__, {:build_done, project_id})
+  defp recently_failed?(project) do
+    with %{"last_failed_at" => ts} <- project.metadata,
+         {:ok, failed_at, _offset} <- DateTime.from_iso8601(ts) do
+      DateTime.diff(DateTime.utc_now(), failed_at, :second) < @retry_cooldown_seconds
+    else
+      _ -> false
     end
+  end
+
+  defp build_project(project_id) do
+    do_build_project(project_id)
+  rescue
+    e ->
+      Logger.warning("[Workshop] Build crashed: #{inspect(e)}")
+
+      case Repo.get(WorkshopProject, project_id) do
+        nil -> :ok
+        project -> handle_build_failure(project, {:crashed, inspect(e)})
+      end
+  catch
+    :not_found -> :ok
+  after
+    # ALWAYS release the current_project lock, even on crash. Previously a
+    # crash between Repo.update and this cast left the Workshop wedged —
+    # current_project stuck non-nil forever, so no new builds ever ran.
+    GenServer.cast(__MODULE__, {:build_done, project_id})
   end
 
   defp do_build_project(project_id) do
@@ -197,19 +213,23 @@ defmodule Traitee.Cognition.Workshop do
     update_status(project_id, "researching")
     broadcast(:build_started, %{project: project.name})
 
+    budget = config(:workshop_token_budget, 100_000)
+
     result =
-      project
-      |> research_phase()
-      |> design_phase()
-      |> build_phase()
-      |> validate_phase()
+      with {:ok, research, tokens} <- research_phase(project, 0, budget),
+           {:ok, design, type, tokens} <- design_phase(project, research, tokens, budget),
+           {:ok, artifacts} <- build_phase(project, design, type),
+           {:ok, artifacts} <- validate_phase(artifacts) do
+        {:ok, artifacts, tokens}
+      end
 
     case result do
-      {:ok, artifacts} ->
+      {:ok, artifacts, tokens} ->
         project
         |> WorkshopProject.changeset(%{
           status: "ready",
-          artifacts: artifacts
+          artifacts: artifacts,
+          token_cost: (project.token_cost || 0) + tokens
         })
         |> Repo.update()
 
@@ -223,19 +243,42 @@ defmodule Traitee.Cognition.Workshop do
 
       {:error, reason} ->
         Logger.warning("[Workshop] Build failed for #{project.name}: #{inspect(reason)}")
-
-        project
-        |> WorkshopProject.changeset(%{
-          status: "ideating",
-          metadata: Map.put(project.metadata || %{}, "last_error", inspect(reason))
-        })
-        |> Repo.update()
-
-        broadcast(:build_failed, %{project: project.name, reason: inspect(reason)})
+        handle_build_failure(project, reason)
     end
   end
 
-  defp research_phase(project) do
+  # Record a failed attempt. After @max_build_attempts the project is
+  # permanently rejected so the build loop never re-picks it (previously
+  # a failing project reset to "ideating" and retried forever every 5 min).
+  defp handle_build_failure(project, reason) do
+    attempts = build_attempts(project) + 1
+    status = if attempts >= @max_build_attempts, do: "rejected", else: "ideating"
+
+    metadata =
+      (project.metadata || %{})
+      |> Map.put("last_error", inspect(reason))
+      |> Map.put("build_attempts", attempts)
+      |> Map.put("last_failed_at", DateTime.to_iso8601(DateTime.utc_now()))
+
+    project
+    |> WorkshopProject.changeset(%{status: status, metadata: metadata})
+    |> Repo.update()
+
+    broadcast(:build_failed, %{project: project.name, reason: inspect(reason)})
+  rescue
+    e ->
+      Logger.warning("[Workshop] Failed to record build failure: #{inspect(e)}")
+      :ok
+  end
+
+  defp build_attempts(project) do
+    case project.metadata do
+      %{"build_attempts" => n} when is_integer(n) -> n
+      _ -> 0
+    end
+  end
+
+  defp research_phase(project, tokens, budget) do
     prompt = """
     I need to build a #{project.project_type} called "#{project.name}".
     Description: #{project.description}
@@ -254,28 +297,54 @@ defmodule Traitee.Cognition.Workshop do
     }
     """
 
-    case llm_complete(prompt) do
-      {:ok, content} -> {project, parse_json(content)}
-      {:error, _} -> {project, {:ok, %{}}}
+    case complete_with_budget(prompt, tokens, budget) do
+      {:ok, content, used} ->
+        research =
+          case parse_json(content) do
+            {:ok, parsed} -> parsed
+            _ -> %{}
+          end
+
+        {:ok, research, tokens + used}
+
+      {:error, :budget_exhausted} ->
+        {:error, :token_budget_exceeded}
+
+      {:error, _} ->
+        {:ok, %{}, tokens}
     end
   end
 
-  defp design_phase({project, {:ok, research}}) do
+  defp design_phase(project, research, tokens, budget) do
     update_status(project.id, "building")
 
-    case project.project_type do
-      "tool" -> design_tool(project, research)
-      "skill" -> design_skill(project, research)
-      "code" -> design_code(project, research)
-      "research" -> design_research(project, research)
-      _ -> design_code(project, research)
+    type =
+      case project.project_type do
+        "tool" -> :tool
+        "skill" -> :skill
+        "research" -> :research
+        _ -> :code
+      end
+
+    prompt = design_prompt(type, project, research)
+
+    case complete_with_budget(prompt, tokens, budget) do
+      {:ok, content, used} ->
+        case parse_json(content) do
+          {:ok, design} -> {:ok, design, type, tokens + used}
+          {:error, reason} -> {:error, {:design_parse_failed, inspect(reason)}}
+        end
+
+      {:error, :budget_exhausted} ->
+        {:error, :token_budget_exceeded}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
-  defp design_phase({project, _}), do: {project, %{}}
-
-  defp design_tool(project, research) do
-    prompt = """
+  defp design_prompt(:tool, project, research) do
+    """
     Design a dynamic tool for Traitee (Elixir AI assistant).
     Tool name: #{project.name}
     Purpose: #{project.description}
@@ -297,15 +366,10 @@ defmodule Traitee.Cognition.Workshop do
       "setup_commands": ["any setup needed, e.g. pip install ..."]
     }
     """
-
-    case llm_complete(prompt) do
-      {:ok, content} -> {project, parse_json(content), :tool}
-      {:error, reason} -> {:error, reason}
-    end
   end
 
-  defp design_skill(project, research) do
-    prompt = """
+  defp design_prompt(:skill, project, research) do
+    """
     Design a skill for Traitee (Elixir AI assistant).
     Skill name: #{project.name}
     Purpose: #{project.description}
@@ -325,15 +389,10 @@ defmodule Traitee.Cognition.Workshop do
       "body": "Full skill instructions in markdown..."
     }
     """
-
-    case llm_complete(prompt) do
-      {:ok, content} -> {project, parse_json(content), :skill}
-      {:error, reason} -> {:error, reason}
-    end
   end
 
-  defp design_code(project, research) do
-    prompt = """
+  defp design_prompt(:code, project, research) do
+    """
     Design a code project for the user.
     Project: #{project.name}
     Purpose: #{project.description}
@@ -350,15 +409,10 @@ defmodule Traitee.Cognition.Workshop do
       "run_command": "how to run/use this project"
     }
     """
-
-    case llm_complete(prompt) do
-      {:ok, content} -> {project, parse_json(content), :code}
-      {:error, reason} -> {:error, reason}
-    end
   end
 
-  defp design_research(project, _research) do
-    prompt = """
+  defp design_prompt(:research, project, _research) do
+    """
     Create a comprehensive research brief on: #{project.description}
 
     Return JSON:
@@ -372,31 +426,29 @@ defmodule Traitee.Cognition.Workshop do
       "recommendations": ["rec1", "rec2"]
     }
     """
-
-    case llm_complete(prompt) do
-      {:ok, content} -> {project, parse_json(content), :research}
-      {:error, reason} -> {:error, reason}
-    end
   end
 
-  defp build_phase({project, {:ok, design}, :tool}) do
+  defp build_phase(project, design, :tool) do
     setup = design["setup_commands"] || []
 
     Enum.each(setup, fn cmd ->
       safe_execute(cmd)
     end)
 
+    # Atom keys matching the Tools.Registry.register_dynamic contract
+    # (:name/:description/:parameters_schema/:executor). String keys used
+    # to be merged alongside the atom-key defaults, producing tools with
+    # empty schemas and a missing executor.
     spec = %{
-      "name" => design["name"] || project.name,
-      "description" => design["description"] || project.description,
-      "parameters" => design["parameters"] || %{"type" => "object", "properties" => %{}},
-      "executor" => {:bash, design["executor_template"] || "echo 'not implemented'"}
+      name: design["name"] || project.name,
+      description: design["description"] || project.description || "",
+      parameters_schema: design["parameters"] || %{"type" => "object", "properties" => %{}},
+      executor: {:bash, design["executor_template"] || "echo 'not implemented'"}
     }
 
-    case ToolRegistry.register_dynamic(spec["name"], spec) do
+    case ToolRegistry.register_dynamic(spec.name, spec) do
       :ok ->
-        artifacts = %{type: "tool", name: spec["name"], registered: true}
-        {:ok, artifacts}
+        {:ok, %{type: "tool", name: spec.name, registered: true}}
 
       {:error, reason} ->
         {:error, {:tool_registration_failed, reason}}
@@ -405,7 +457,7 @@ defmodule Traitee.Cognition.Workshop do
     e -> {:error, {:build_failed, inspect(e)}}
   end
 
-  defp build_phase({project, {:ok, design}, :skill}) do
+  defp build_phase(project, design, :skill) do
     name = design["name"] || project.name
     frontmatter = design["frontmatter"] || %{}
     body = design["body"] || ""
@@ -421,35 +473,47 @@ defmodule Traitee.Cognition.Workshop do
     e -> {:error, {:build_failed, inspect(e)}}
   end
 
-  defp build_phase({project, {:ok, design}, :code}) do
-    workshop_path = Path.join([Traitee.data_dir(), @workshop_dir, project.name])
-    File.mkdir_p!(workshop_path)
+  defp build_phase(project, design, :code) do
+    case safe_project_dir(project.name) do
+      {:ok, workshop_path} ->
+        File.mkdir_p!(workshop_path)
 
-    files = design["files"] || []
+        files = design["files"] || []
 
-    Enum.each(files, fn file ->
-      path = Path.join(workshop_path, file["path"])
-      File.mkdir_p!(Path.dirname(path))
-      File.write!(path, file["content"] || "")
-    end)
+        written =
+          Enum.count(files, fn file ->
+            safe_write(workshop_path, file["path"], file["content"] || "") == :ok
+          end)
 
-    if design["readme"] do
-      File.write!(Path.join(workshop_path, "README.md"), design["readme"])
+        if design["readme"] do
+          File.write!(Path.join(workshop_path, "README.md"), design["readme"])
+        end
+
+        {:ok,
+         %{
+           type: "code",
+           path: workshop_path,
+           file_count: written,
+           run_command: design["run_command"]
+         }}
+
+      {:error, reason} ->
+        {:error, reason}
     end
-
-    {:ok,
-     %{
-       type: "code",
-       path: workshop_path,
-       file_count: length(files),
-       run_command: design["run_command"]
-     }}
   rescue
     e -> {:error, {:build_failed, inspect(e)}}
   end
 
-  defp build_phase({project, {:ok, design}, :research}) do
-    workshop_path = Path.join([Traitee.data_dir(), @workshop_dir, project.name])
+  defp build_phase(project, design, :research) do
+    case safe_project_dir(project.name) do
+      {:ok, workshop_path} -> build_research_brief(project, design, workshop_path)
+      {:error, reason} -> {:error, reason}
+    end
+  rescue
+    e -> {:error, {:build_failed, inspect(e)}}
+  end
+
+  defp build_research_brief(project, design, workshop_path) do
     File.mkdir_p!(workshop_path)
 
     sections = design["sections"] || []
@@ -473,38 +537,77 @@ defmodule Traitee.Cognition.Workshop do
     end)
 
     {:ok, %{type: "research", path: workshop_path}}
-  rescue
-    e -> {:error, {:build_failed, inspect(e)}}
   end
 
-  defp build_phase({_project, _design, _type}), do: {:error, :unknown_type}
-  defp build_phase({_project, _design}), do: {:error, :missing_type}
-  defp build_phase(other), do: {:error, {:unexpected, other}}
-
-  defp validate_phase({:ok, %{type: "tool", name: name} = artifacts}) do
+  # A tool that fails its smoke execution is a failed build (previously
+  # the error was swallowed as `validation: :skipped` and the broken tool
+  # shipped as "ready").
+  defp validate_phase(%{type: "tool", name: name} = artifacts) do
     case ToolRegistry.execute(name, %{}) do
       {:ok, _} -> {:ok, artifacts}
-      {:error, _} -> {:ok, Map.put(artifacts, :validation, :skipped)}
+      {:error, reason} -> {:error, {:validation_failed, inspect(reason)}}
     end
   rescue
-    _ -> {:ok, artifacts}
+    e -> {:error, {:validation_failed, inspect(e)}}
   end
 
-  defp validate_phase({:ok, artifacts}), do: {:ok, artifacts}
-  defp validate_phase({:error, _} = err), do: err
+  defp validate_phase(artifacts), do: {:ok, artifacts}
 
   # -- Helpers --
 
-  defp llm_complete(prompt) do
-    request = %{
-      messages: [%{role: "user", content: prompt}],
-      system:
-        "You are an expert software engineer building tools and projects. Return valid JSON only, no explanation."
-    }
+  # Mirrors Dream.complete_with_budget/2: refuse to spend once the
+  # accumulated token count crosses the configured budget.
+  defp complete_with_budget(prompt, tokens_used, budget) do
+    if tokens_used >= budget do
+      {:error, :budget_exhausted}
+    else
+      request = %{
+        messages: [%{role: "user", content: prompt}],
+        system:
+          "You are an expert software engineer building tools and projects. Return valid JSON only, no explanation."
+      }
 
-    case Router.complete(request) do
-      {:ok, %{content: content}} -> {:ok, content}
-      {:error, reason} -> {:error, reason}
+      case Router.complete(request) do
+        {:ok, %{content: content, usage: usage}} ->
+          {:ok, content, (usage && usage[:total_tokens]) || estimate_tokens(content)}
+
+        {:ok, %{content: content}} ->
+          {:ok, content, estimate_tokens(content)}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
+  end
+
+  defp estimate_tokens(text) when is_binary(text), do: ceil(String.length(text) / 4)
+  defp estimate_tokens(_), do: 0
+
+  # Project names come from the LLM — only allow a conservative charset
+  # so they can't smuggle path separators or traversal into the dir name.
+  defp safe_project_dir(name) do
+    if is_binary(name) and name =~ ~r/^[a-zA-Z0-9 _\-]+$/ do
+      {:ok, Path.join([Traitee.data_dir(), @workshop_dir, name])}
+    else
+      {:error, {:unsafe_project_name, inspect(name)}}
+    end
+  end
+
+  # Guard every LLM-supplied relative path: skip (and log) anything that
+  # resolves outside the project's workshop directory.
+  defp safe_write(_base, relative, _content) when relative in [nil, ""], do: :skipped
+
+  defp safe_write(base, relative, content) do
+    expanded_base = Path.expand(base)
+    full = Path.expand(Path.join(base, relative))
+
+    if full == expanded_base or String.starts_with?(full, expanded_base <> "/") do
+      File.mkdir_p!(Path.dirname(full))
+      File.write!(full, content)
+      :ok
+    else
+      Logger.warning("[Workshop] Skipping file escaping workshop dir: #{inspect(relative)}")
+      :skipped
     end
   end
 

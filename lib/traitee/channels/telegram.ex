@@ -8,11 +8,14 @@ defmodule Traitee.Channels.Telegram do
   use GenServer
 
   alias Traitee.Channels.Channel
+  alias Traitee.Channels.Splitter
   alias Traitee.Router, as: MessageRouter
 
   require Logger
 
-  defstruct [:token, :bot_info, :allow_from, error_count: 0]
+  @message_limit 4096
+
+  defstruct [:token, :bot_info, :allow_from, error_count: 0, offset: 0]
 
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -65,9 +68,10 @@ defmodule Traitee.Channels.Telegram do
   def handle_info(:poll, state) do
     me = self()
     token = state.token
+    offset = state.offset
 
     Task.start_link(fn ->
-      result = poll_updates(token)
+      result = poll_updates(token, offset)
       send(me, {:poll_result, result})
     end)
 
@@ -75,13 +79,15 @@ defmodule Traitee.Channels.Telegram do
   end
 
   @impl true
-  def handle_info({:poll_result, {:ok, updates}}, state) do
-    Enum.each(updates, fn update ->
-      handle_update(update, state)
-    end)
-
+  def handle_info({:poll_result, {:ok, updates, new_offset}}, state) do
+    process_updates(updates, state)
     schedule_poll(1_000)
-    {:noreply, %{state | error_count: 0}}
+    {:noreply, %{state | error_count: 0, offset: new_offset}}
+  end
+
+  @impl true
+  def handle_info({:set_offset, offset}, state) do
+    {:noreply, %{state | offset: offset}}
   end
 
   @impl true
@@ -111,6 +117,21 @@ defmodule Traitee.Channels.Telegram do
 
   # -- Private --
 
+  # Updates within one chat are processed sequentially (in a single Task) to
+  # preserve per-chat ordering; different chats still run in parallel.
+  defp process_updates(updates, state) do
+    updates
+    |> Enum.group_by(&update_chat_id/1)
+    |> Enum.each(fn {_chat_id, chat_updates} ->
+      Task.start(fn ->
+        Enum.each(chat_updates, fn update -> handle_update(update, state) end)
+      end)
+    end)
+  end
+
+  defp update_chat_id(%{"message" => %{"chat" => %{"id" => id}}}), do: id
+  defp update_chat_id(_update), do: nil
+
   defp handle_update(%{"message" => msg}, _state) when is_map(msg) do
     text = msg["text"]
     from = msg["from"]
@@ -128,14 +149,13 @@ defmodule Traitee.Channels.Telegram do
           metadata: %{message_id: msg["message_id"], chat_type: chat["type"]}
         )
 
-      Task.start(fn -> MessageRouter.route(inbound) end)
+      MessageRouter.route(inbound)
     end
   end
 
   defp handle_update(_update, _state), do: :ok
 
-  defp poll_updates(token) do
-    offset = :persistent_term.get({__MODULE__, :offset}, 0)
+  defp poll_updates(token, offset) do
     url = "https://api.telegram.org/bot#{token}/getUpdates"
 
     case Req.get(url,
@@ -144,12 +164,13 @@ defmodule Traitee.Channels.Telegram do
            retry: false
          ) do
       {:ok, %{status: 200, body: %{"ok" => true, "result" => results}}} ->
-        if results != [] do
-          max_id = results |> Enum.map(& &1["update_id"]) |> Enum.max()
-          :persistent_term.put({__MODULE__, :offset}, max_id + 1)
-        end
+        new_offset =
+          case results do
+            [] -> offset
+            _ -> results |> Enum.map(& &1["update_id"]) |> Enum.max() |> Kernel.+(1)
+          end
 
-        {:ok, results}
+        {:ok, results, new_offset}
 
       {:ok, %{body: body}} ->
         {:error, body}
@@ -160,12 +181,42 @@ defmodule Traitee.Channels.Telegram do
   end
 
   defp send_telegram_message(token, chat_id, text) do
-    url = "https://api.telegram.org/bot#{token}/sendMessage"
+    text
+    |> Splitter.split_message(@message_limit)
+    |> Enum.reduce_while(:ok, fn part, :ok ->
+      case send_telegram_part(token, chat_id, part) do
+        :ok -> {:cont, :ok}
+        error -> {:halt, error}
+      end
+    end)
+  end
 
-    case Req.post(url,
-           json: %{chat_id: chat_id, text: text, parse_mode: "Markdown"},
-           retry: false
-         ) do
+  defp send_telegram_part(token, chat_id, text) do
+    case do_send(token, chat_id, text, "Markdown") do
+      :ok ->
+        :ok
+
+      {:error, %{"description" => description} = body} ->
+        if is_binary(description) and String.contains?(description, "can't parse entities") do
+          Logger.debug("Telegram markdown parse failed, retrying without parse_mode")
+          do_send(token, chat_id, text, nil)
+        else
+          Logger.warning("Telegram send failed: #{inspect(body)}")
+          {:error, body}
+        end
+
+      {:error, reason} ->
+        Logger.warning("Telegram send failed: #{inspect(reason)}")
+        {:error, reason}
+    end
+  end
+
+  defp do_send(token, chat_id, text, parse_mode) do
+    url = "https://api.telegram.org/bot#{token}/sendMessage"
+    payload = %{chat_id: chat_id, text: text}
+    payload = if parse_mode, do: Map.put(payload, :parse_mode, parse_mode), else: payload
+
+    case Req.post(url, json: payload, retry: false) do
       {:ok, %{status: 200}} -> :ok
       {:ok, %{body: body}} -> {:error, body}
       {:error, reason} -> {:error, reason}
@@ -173,6 +224,8 @@ defmodule Traitee.Channels.Telegram do
   end
 
   defp clear_stale_connections(token) do
+    me = self()
+
     Task.start(fn ->
       try do
         url = "https://api.telegram.org/bot#{token}/deleteWebhook"
@@ -186,7 +239,7 @@ defmodule Traitee.Channels.Telegram do
                receive_timeout: 5_000
              ) do
           {:ok, %{status: 200, body: %{"ok" => true, "result" => [update | _]}}} ->
-            :persistent_term.put({__MODULE__, :offset}, update["update_id"] + 1)
+            send(me, {:set_offset, update["update_id"] + 1})
 
           _ ->
             :ok

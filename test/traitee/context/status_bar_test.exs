@@ -1,7 +1,7 @@
 defmodule Traitee.Context.StatusBarTest do
   use ExUnit.Case, async: true
 
-  alias Traitee.Context.{StatusBar, Budget}
+  alias Traitee.Context.{Budget, StatusBar}
 
   defp build_budget(opts \\ []) do
     total = opts[:total] || 128_000
@@ -29,20 +29,24 @@ defmodule Traitee.Context.StatusBarTest do
     end
 
     test "preserves compacting state from session" do
-      data = StatusBar.from_session(%{
-        stm_count: 10,
-        stm_capacity: 50,
-        compaction_state: :compacting
-      })
+      data =
+        StatusBar.from_session(%{
+          stm_count: 10,
+          stm_capacity: 50,
+          compaction_state: :compacting
+        })
+
       assert data.compaction_state == :compacting
     end
 
     test "preserves compacted state from session" do
-      data = StatusBar.from_session(%{
-        stm_count: 10,
-        stm_capacity: 50,
-        compaction_state: :compacted
-      })
+      data =
+        StatusBar.from_session(%{
+          stm_count: 10,
+          stm_capacity: 50,
+          compaction_state: :compacted
+        })
+
       assert data.compaction_state == :compacted
     end
 
@@ -65,12 +69,13 @@ defmodule Traitee.Context.StatusBarTest do
     test "includes token counts when budget is present" do
       budget = build_budget()
 
-      data = StatusBar.from_session(%{
-        model: "openai/gpt-4o",
-        budget: budget,
-        stm_count: 20,
-        stm_capacity: 50
-      })
+      data =
+        StatusBar.from_session(%{
+          model: "openai/gpt-4o",
+          budget: budget,
+          stm_count: 20,
+          stm_capacity: 50
+        })
 
       rendered = StatusBar.render(data)
       assert rendered =~ "/128.0K"
@@ -104,11 +109,12 @@ defmodule Traitee.Context.StatusBarTest do
     test "shows elapsed time" do
       start = DateTime.add(DateTime.utc_now(), -300, :second)
 
-      data = StatusBar.from_session(%{
-        stm_count: 10,
-        stm_capacity: 50,
-        session_start: start
-      })
+      data =
+        StatusBar.from_session(%{
+          stm_count: 10,
+          stm_capacity: 50,
+          session_start: start
+        })
 
       rendered = StatusBar.render(data)
       assert rendered =~ "5m"
@@ -117,12 +123,13 @@ defmodule Traitee.Context.StatusBarTest do
     test "shows progress bar with budget" do
       budget = build_budget()
 
-      data = StatusBar.from_session(%{
-        model: "openai/gpt-4o",
-        budget: budget,
-        stm_count: 10,
-        stm_capacity: 50
-      })
+      data =
+        StatusBar.from_session(%{
+          model: "openai/gpt-4o",
+          budget: budget,
+          stm_count: 10,
+          stm_capacity: 50
+        })
 
       rendered = StatusBar.render(data)
       assert rendered =~ "█"
@@ -134,13 +141,14 @@ defmodule Traitee.Context.StatusBarTest do
     test "returns IO data with ANSI escape codes" do
       budget = build_budget()
 
-      data = StatusBar.from_session(%{
-        model: "openai/gpt-4o",
-        budget: budget,
-        stm_count: 20,
-        stm_capacity: 50,
-        session_start: DateTime.utc_now()
-      })
+      data =
+        StatusBar.from_session(%{
+          model: "openai/gpt-4o",
+          budget: budget,
+          stm_count: 20,
+          stm_capacity: 50,
+          session_start: DateTime.utc_now()
+        })
 
       ansi = StatusBar.render_ansi(data)
       output = IO.iodata_to_binary(ansi)
@@ -152,12 +160,13 @@ defmodule Traitee.Context.StatusBarTest do
     test "uses green color for low utilization" do
       budget = build_budget(stm_used: 1_000)
 
-      data = StatusBar.from_session(%{
-        model: "test",
-        budget: budget,
-        stm_count: 5,
-        stm_capacity: 50
-      })
+      data =
+        StatusBar.from_session(%{
+          model: "test",
+          budget: budget,
+          stm_count: 5,
+          stm_capacity: 50
+        })
 
       output = IO.iodata_to_binary(StatusBar.render_ansi(data))
       assert output =~ "\e[32m"

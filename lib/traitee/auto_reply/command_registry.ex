@@ -1,6 +1,9 @@
 defmodule Traitee.AutoReply.CommandRegistry do
   @moduledoc "Command registry with argument parsing and authorization."
 
+  alias Traitee.Cognition.{Dream, Interest, Metacognition, QualityControl, UserModel, Workshop}
+  alias Traitee.Cognition.Schema.WorkshopProject
+  alias Traitee.Context.Budget
   alias Traitee.Cron.Scheduler
   alias Traitee.LLM.Router
   alias Traitee.Memory.{Compactor, LTM, Vector}
@@ -273,23 +276,24 @@ defmodule Traitee.AutoReply.CommandRegistry do
   def cmd_context(_args, %{session_pid: pid}) do
     alias Traitee.Context.StatusBar
 
-    state = Traitee.Session.Server.get_state(pid)
+    state = Session.Server.get_state(pid)
 
-    status_data = StatusBar.from_session(%{
-      model: state.model,
-      budget: state.last_budget,
-      stm_count: state.stm_size,
-      stm_capacity: state.stm_capacity,
-      session_start: state.created_at,
-      compaction_state: state.compaction_state
-    })
+    status_data =
+      StatusBar.from_session(%{
+        model: state.model,
+        budget: state.last_budget,
+        stm_count: state.stm_size,
+        stm_capacity: state.stm_capacity,
+        session_start: state.created_at,
+        compaction_state: state.compaction_state
+      })
 
     bar = StatusBar.render(status_data)
 
     detail =
       if state.last_budget do
         budget = state.last_budget
-        "\n" <> Traitee.Context.Budget.budget_summary(budget)
+        "\n" <> Budget.budget_summary(budget)
       else
         "\n(No context assembly yet — send a message first)"
       end
@@ -441,12 +445,12 @@ defmodule Traitee.AutoReply.CommandRegistry do
   # -- Cognition Commands --
 
   def cmd_dream(["now" | _], _ctx) do
-    Traitee.Cognition.Dream.dream_now()
+    Dream.dream_now()
     {:ok, "Dream cycle triggered. Running in background."}
   end
 
   def cmd_dream(_args, _ctx) do
-    status = Traitee.Cognition.Dream.status()
+    status = Dream.status()
 
     last =
       case status.last_dream do
@@ -470,7 +474,7 @@ defmodule Traitee.AutoReply.CommandRegistry do
     import Ecto.Query
 
     projects =
-      Traitee.Cognition.Schema.WorkshopProject
+      WorkshopProject
       |> order_by([p], desc: p.inserted_at)
       |> limit(20)
       |> Traitee.Repo.all()
@@ -492,7 +496,7 @@ defmodule Traitee.AutoReply.CommandRegistry do
   def cmd_workshop(["build", id | _], _ctx) do
     case Integer.parse(id) do
       {project_id, _} ->
-        Traitee.Cognition.Workshop.enqueue(project_id)
+        Workshop.enqueue(project_id)
         {:ok, "Project #{project_id} queued for building."}
 
       :error ->
@@ -501,7 +505,7 @@ defmodule Traitee.AutoReply.CommandRegistry do
   end
 
   def cmd_workshop(_args, _ctx) do
-    status = Traitee.Cognition.Workshop.status()
+    status = Workshop.status()
 
     current =
       case status.current_project do
@@ -526,17 +530,19 @@ defmodule Traitee.AutoReply.CommandRegistry do
       Traitee.Config.get([:security, :owner_id]) || to_string(inbound.sender_id)
 
     interests =
-      Traitee.Cognition.UserModel.top_interests(owner_id, 5)
-      |> Enum.map_join(", ", fn i -> "#{i.topic} (#{Float.round(Traitee.Cognition.Interest.score(i), 2)})" end)
+      UserModel.top_interests(owner_id, 5)
+      |> Enum.map_join(", ", fn i ->
+        "#{i.topic} (#{Float.round(Interest.score(i), 2)})"
+      end)
 
     desires =
-      Traitee.Cognition.UserModel.desires(owner_id)
+      UserModel.desires(owner_id)
       |> Enum.take(5)
       |> Enum.join("; ")
 
-    dream = Traitee.Cognition.Dream.status()
-    workshop = Traitee.Cognition.Workshop.status()
-    meta = Traitee.Cognition.Metacognition.summary()
+    dream = Dream.status()
+    workshop = Workshop.status()
+    meta = Metacognition.summary()
 
     text =
       "Cognition Overview\n" <>
@@ -554,7 +560,7 @@ defmodule Traitee.AutoReply.CommandRegistry do
   def cmd_qc(["review", id | _], _ctx) do
     case Integer.parse(id) do
       {project_id, _} ->
-        Traitee.Cognition.QualityControl.review_project(project_id)
+        QualityControl.review_project(project_id)
         {:ok, "QC review triggered for project ##{project_id}."}
 
       :error ->
@@ -563,7 +569,7 @@ defmodule Traitee.AutoReply.CommandRegistry do
   end
 
   def cmd_qc(_args, _ctx) do
-    status = Traitee.Cognition.QualityControl.status()
+    status = QualityControl.status()
 
     rate =
       case status.approval_rate do
@@ -589,7 +595,7 @@ defmodule Traitee.AutoReply.CommandRegistry do
     session_id = build_session_id(inbound)
 
     case Registry.lookup(Traitee.Session.Registry, session_id) do
-      [{pid, _}] -> Traitee.Session.Server.configure(pid, key, value)
+      [{pid, _}] -> Session.Server.configure(pid, key, value)
       _ -> :ok
     end
   rescue
